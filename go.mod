@@ -21,3 +21,5 @@ require (
 )
 
 replace github.com/urfave/cli/v2 => github.com/mendersoftware/cli/v2 v2.1.1-minimal
+
+replace github.com/mendersoftware/openssl => github.com/theyoctojester/openssl v1.1.1-0.20220324150842-a0d59b39943d
