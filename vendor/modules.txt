@@ -23,7 +23,7 @@ github.com/mendersoftware/mender-artifact/artifact
 github.com/mendersoftware/mender-artifact/awriter
 github.com/mendersoftware/mender-artifact/handlers
 github.com/mendersoftware/mender-artifact/utils
-# github.com/mendersoftware/openssl v1.1.0
+# github.com/mendersoftware/openssl v1.1.0 => github.com/theyoctojester/openssl v1.1.1-0.20220324150842-a0d59b39943d
 ## explicit
 github.com/mendersoftware/openssl
 github.com/mendersoftware/openssl/utils
