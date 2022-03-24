@@ -79,7 +79,7 @@ DBUS_POLICY_FILES = \
 	support/dbus/io.mender.UpdateManager.conf
 
 build:
-	$(GO) build $(GO_LDFLAGS) $(BUILDV) $(BUILDTAGS)
+	$(GO) build -mod=readonly $(GO_LDFLAGS) $(BUILDV) $(BUILDTAGS)
 
 mender: build
 
