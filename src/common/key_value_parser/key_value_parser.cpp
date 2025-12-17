@@ -61,6 +61,11 @@ ExpectedKeyValueMap ParseKeyValueMap(const vector<string> &items, char delimiter
 
 error::Error AddParseKeyValueMap(KeyValueMap &base, const vector<string> &items, char delimiter) {
 	for (auto str : items) {
+		// Trim trailing carriage return (Windows CRLF line endings)
+		if (!str.empty() && str.back() == '\r') {
+			str.pop_back();
+		}
+
 		auto delim_pos = str.find(delimiter);
 		if (delim_pos == string::npos) {
 			return MakeError(
@@ -69,6 +74,10 @@ error::Error AddParseKeyValueMap(KeyValueMap &base, const vector<string> &items,
 
 		string key = str.substr(0, delim_pos);
 		string value = str.substr(delim_pos + 1, str.size() - delim_pos - 1);
+		// Trim trailing carriage return from value as well
+		if (!value.empty() && value.back() == '\r') {
+			value.pop_back();
+		}
 		if (base.count(key) != 0) {
 			return MakeError(
 				KeyValueParserErrorCode::InvalidDataError, "Key listed more than once: " + key);
@@ -94,6 +103,11 @@ error::Error AddParseKeyValues(KeyValuesMap &base, const vector<string> &items, 
 	string invalid_data = "";
 
 	for (auto str : items) {
+		// Trim trailing carriage return (Windows CRLF line endings)
+		if (!str.empty() && str.back() == '\r') {
+			str.pop_back();
+		}
+
 		auto delim_pos = str.find(delimiter);
 		if (delim_pos == string::npos) {
 			invalid_data = str;
@@ -102,6 +116,10 @@ error::Error AddParseKeyValues(KeyValuesMap &base, const vector<string> &items, 
 
 		string key = str.substr(0, delim_pos);
 		string value = str.substr(delim_pos + 1, str.size() - delim_pos - 1);
+		// Trim trailing carriage return from value as well
+		if (!value.empty() && value.back() == '\r') {
+			value.pop_back();
+		}
 		if (base.count(key) != 0) {
 			base[key].push_back(value);
 		} else {

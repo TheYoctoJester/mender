@@ -74,8 +74,12 @@ add_library(mender_update_daemon STATIC
   daemon/context.cpp
   daemon/states.cpp
   daemon/state_machine/state_machine.cpp
-  daemon/state_machine/platform/posix/signal_handling.cpp
 )
+if(WIN32)
+  target_sources(mender_update_daemon PRIVATE daemon/state_machine/platform/windows/signal_handling.cpp)
+else()
+  target_sources(mender_update_daemon PRIVATE daemon/state_machine/platform/posix/signal_handling.cpp)
+endif()
 target_link_libraries(mender_update_daemon PUBLIC
   api_client
   common_error
@@ -107,6 +111,10 @@ target_link_libraries(mender_update_cli PUBLIC
 )
 
 add_executable(mender-update main.cpp)
+if(WIN32)
+  # Include OpenSSL applink for proper stdio handling on Windows
+  target_sources(mender-update PRIVATE ${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/include/openssl/applink.c)
+endif()
 target_link_libraries(mender-update PRIVATE
   common_log
   client_shared_conf

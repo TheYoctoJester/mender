@@ -55,10 +55,24 @@ enum class State {
 	ArtifactFailure,
 };
 
+// Hash function for enum class State (required for MSVC)
+struct StateHash {
+	size_t operator()(const State& s) const {
+		return std::hash<int>()(static_cast<int>(s));
+	}
+};
+
 enum class Action {
 	Enter,
 	Leave,
 	Error,
+};
+
+// Hash function for enum class Action (required for MSVC)
+struct ActionHash {
+	size_t operator()(const Action& a) const {
+		return std::hash<int>()(static_cast<int>(a));
+	}
 };
 
 enum class OnError {

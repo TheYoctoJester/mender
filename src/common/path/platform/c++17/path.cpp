@@ -174,8 +174,8 @@ expected::ExpectedUnorderedSet<string> ListFiles(
 				continue;
 			}
 
-			if (matcher(file_path)) {
-				matching_files.insert(file_path);
+			if (matcher(file_path.string())) {
+				matching_files.insert(file_path.string());
 			}
 		}
 

@@ -62,3 +62,6 @@ build/
 !/src/common/cmake/*.cmake
 Testing
 /install_manifest*.txt
+
+# vcpkg
+vcpkg_installed/
