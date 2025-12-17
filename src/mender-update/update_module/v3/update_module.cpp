@@ -14,6 +14,8 @@
 
 #include <mender-update/update_module/v3/update_module.hpp>
 
+#include <vector>
+
 #include <common/events.hpp>
 #include <common/error.hpp>
 #include <common/expected.hpp>
@@ -53,7 +55,23 @@ std::string StateToString(State state) {
 
 expected::Expected<std::unique_ptr<UpdateModule>> UpdateModule::Create(
 	MenderContext &ctx, const string &payload_type) {
-	auto update_module_path = path::Join(ctx.GetConfig().paths.GetModulesPath(), payload_type);
+	auto base_path = path::Join(ctx.GetConfig().paths.GetModulesPath(), payload_type);
+
+	// Try to find the update module with common executable extensions on Windows
+	string update_module_path = base_path;
+#ifdef _WIN32
+	// On Windows, Update Modules typically have .cmd, .bat, .exe, or .ps1 extensions
+	// since files without extensions are not directly executable
+	static const vector<string> win_extensions = {".cmd", ".bat", ".exe", ".ps1", ""};
+	for (const auto &ext : win_extensions) {
+		string candidate = base_path + ext;
+		if (path::FileExists(candidate)) {
+			update_module_path = candidate;
+			break;
+		}
+	}
+#endif
+
 	auto exp_path_is_safe =
 		path::IsWithinOrEqual(update_module_path, ctx.GetConfig().paths.GetModulesPath());
 	if (!exp_path_is_safe.has_value()) {
