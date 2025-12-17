@@ -18,6 +18,10 @@
 #include <iostream>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <artifact/config.hpp>
 
 #include <common/common.hpp>
@@ -53,6 +57,12 @@ namespace kv_db = mender::common::key_value_database;
 namespace log = mender::common::log;
 namespace path = mender::common::path;
 namespace standalone = mender::update::standalone;
+
+// Windows named event names for IPC with the daemon
+#ifdef _WIN32
+static const char *MENDER_CHECK_UPDATE_EVENT = "Global\\MenderCheckUpdate";
+static const char *MENDER_SEND_INVENTORY_EVENT = "Global\\MenderSendInventory";
+#endif
 
 static error::Error DoMaybeInstallBootstrapArtifact(context::MenderContext &main_context) {
 	const string bootstrap_artifact_path {
@@ -333,6 +343,48 @@ error::Error DaemonAction::Execute(context::MenderContext &main_context) {
 	return state_machine.Run();
 }
 
+#ifdef _WIN32
+// Windows implementation: Signal the daemon using named events
+static error::Error SignalDaemonEvent(const char *event_name, const char *action_description) {
+	HANDLE hEvent = OpenEventA(EVENT_MODIFY_STATE, FALSE, event_name);
+	if (hEvent == NULL) {
+		DWORD err = GetLastError();
+		if (err == ERROR_FILE_NOT_FOUND) {
+			return error::Error(
+				make_error_condition(errc::no_such_process),
+				"Mender daemon is not running (event not found)");
+		}
+		return error::Error(
+			make_error_condition(errc::permission_denied),
+			"Failed to open event: error code " + to_string(err));
+	}
+
+	if (!SetEvent(hEvent)) {
+		DWORD err = GetLastError();
+		CloseHandle(hEvent);
+		return error::Error(
+			make_error_condition(errc::io_error),
+			"Failed to signal event: error code " + to_string(err));
+	}
+
+	CloseHandle(hEvent);
+	log::Info(string("Successfully signaled daemon to ") + action_description);
+	return error::NoError;
+}
+
+error::Error SendInventoryAction::Execute(context::MenderContext &main_context) {
+	return SignalDaemonEvent(MENDER_SEND_INVENTORY_EVENT, "send inventory")
+		.WithContext("Failed to force an inventory update");
+}
+
+error::Error CheckUpdateAction::Execute(context::MenderContext &main_context) {
+	return SignalDaemonEvent(MENDER_CHECK_UPDATE_EVENT, "check for updates")
+		.WithContext("Failed to force an update check");
+}
+
+#else
+// POSIX implementation: Signal the daemon using systemctl and kill
+
 static expected::ExpectedString GetPID() {
 	processes::Process proc({"systemctl", "show", "--property=MainPID", "mender-updated"});
 	auto exp_line_data = proc.GenerateLineData();
@@ -391,6 +443,7 @@ error::Error CheckUpdateAction::Execute(context::MenderContext &main_context) {
 	}
 	return SendSignal("SIGUSR1", pid.value()).WithContext("Failed to force an update check");
 }
+#endif // _WIN32
 
 } // namespace cli
 } // namespace update
