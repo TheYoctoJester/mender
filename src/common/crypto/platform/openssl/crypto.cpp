@@ -289,10 +289,13 @@ ExpectedPrivateKey PrivateKey::Load(const Args &args) {
 	if (OPENSSL_init_ssl(0, nullptr) != OPENSSL_SUCCESS) {
 		log::Warning("Error initializing libssl: " + GetOpenSSLErrorMessage());
 	}
-	// Load OpenSSL config
+	// Load OpenSSL config (skip on Windows - vcpkg OpenSSL doesn't include a config file
+	// and it's not needed for our use case)
+#ifndef _WIN32
 	if (CONF_modules_load_file(nullptr, nullptr, 0) != OPENSSL_SUCCESS) {
 		log::Warning("Failed to load OpenSSL configuration file: " + GetOpenSSLErrorMessage());
 	}
+#endif
 
 	log::Trace("Loading private key");
 	if (args.ssl_engine != "") {
