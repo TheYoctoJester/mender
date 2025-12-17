@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "mender-windows",
+  "version-string": "1.0.0",
+  "description": "Mender client for Windows",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-log",
+    "boost-filesystem",
+    "boost-program-options",
+    "openssl",
+    "libarchive",
+    "lmdb",
+    "zstd"
+  ]
+}

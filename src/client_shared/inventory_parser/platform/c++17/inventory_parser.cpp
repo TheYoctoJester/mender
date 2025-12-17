@@ -61,12 +61,25 @@ kvp::ExpectedKeyValuesMap GetInventoryData(const string &generators_dir) {
 
 			log::Debug("Found inventory script: " + file_name);
 
+#ifdef _WIN32
+			// On Windows, check file extension for executability
+			string ext = file_path.extension().string();
+			// Convert to lowercase for comparison
+			for (auto &c : ext) {
+				c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+			}
+			if (ext != ".cmd" && ext != ".bat" && ext != ".exe" && ext != ".ps1") {
+				log::Warning("'" + file_path_str + "' is not an executable file type on Windows");
+				continue;
+			}
+#else
 			fs::perms perms = entry.status().permissions();
 			if ((perms & (fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec))
 				== fs::perms::none) {
 				log::Warning("'" + file_path_str + "' is not executable");
 				continue;
 			}
+#endif
 			procs::Process proc({file_path_str});
 			auto ex_line_data = proc.GenerateLineData();
 			if (!ex_line_data) {

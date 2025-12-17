@@ -52,6 +52,11 @@ public:
 	void StopAfterDeployments(int number);
 #endif
 
+	// Returns a reference to the event loop (used for signal handling)
+	events::EventLoop &GetEventLoop() {
+		return event_loop_;
+	}
+
 private:
 	Context &ctx_;
 	events::EventLoop &event_loop_;

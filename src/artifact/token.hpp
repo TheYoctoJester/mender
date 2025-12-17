@@ -50,7 +50,14 @@ enum class Type {
 	Payload,
 };
 
-const unordered_map<const Type, const string> type_map {
+// Hash function for enum class Type (required for MSVC)
+struct TypeHash {
+	size_t operator()(const Type& t) const {
+		return std::hash<int>()(static_cast<int>(t));
+	}
+};
+
+const unordered_map<const Type, const string, TypeHash> type_map {
 	{Type::Uninitialized, "Uninitialized"},
 	{Type::EOFToken, "EOF"},
 	{Type::Unrecognized, "Unrecognized"},

@@ -17,6 +17,12 @@
 
 #include <common/config.h>
 
+// Windows doesn't have ssize_t, define it
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
 #include <archive.h>
 #include <archive_entry.h>
 

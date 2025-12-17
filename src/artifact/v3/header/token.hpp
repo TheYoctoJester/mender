@@ -55,7 +55,14 @@ enum class Type {
 	ArtifactHeaderMetaData,
 };
 
-unordered_map<const Type, string> type_map {
+// Hash function for enum class Type (required for MSVC)
+struct TypeHash {
+	size_t operator()(const Type& t) const {
+		return std::hash<int>()(static_cast<int>(t));
+	}
+};
+
+unordered_map<const Type, string, TypeHash> type_map {
 	{Type::Uninitialized, "Uninitialized"},
 	{Type::EOFToken, "EOF"},
 	{Type::Unrecognized, "Unrecognized"},

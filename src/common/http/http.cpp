@@ -20,6 +20,12 @@
 #include <iomanip>
 #include <string>
 
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#define strcasecmp _stricmp
+#endif
+
 #include <common/common.hpp>
 
 namespace mender {

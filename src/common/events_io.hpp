@@ -56,7 +56,11 @@ public:
 
 private:
 #ifdef MENDER_USE_BOOST_ASIO
+#ifdef _WIN32
+	asio::windows::stream_handle pipe_;
+#else
 	asio::posix::stream_descriptor pipe_;
+#endif
 	shared_ptr<bool> destroying_;
 #endif // MENDER_USE_BOOST_ASIO
 };
@@ -79,7 +83,11 @@ public:
 
 private:
 #ifdef MENDER_USE_BOOST_ASIO
+#ifdef _WIN32
+	asio::windows::stream_handle pipe_;
+#else
 	asio::posix::stream_descriptor pipe_;
+#endif
 	shared_ptr<bool> destroying_;
 #endif // MENDER_USE_BOOST_ASIO
 };

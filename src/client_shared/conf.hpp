@@ -142,11 +142,21 @@ private:
 };
 
 struct DefaultPathsType {
+#ifdef _WIN32
+	// Windows paths - use ProgramData for system-wide configuration and data
+	string path_conf_dir = "C:\\ProgramData\\Mender";
+	string conf_file = path::Join(path_conf_dir, "mender.conf");
+	string path_data_dir = "C:\\ProgramData\\Mender";
+	string data_store = "C:\\ProgramData\\Mender";
+	string fallback_conf_file = path::Join(data_store, "mender.conf.fallback");
+#else
+	// Unix paths
 	string path_conf_dir = path::Join("/etc", "mender");
 	string conf_file = path::Join(path_conf_dir, "mender.conf");
 	string path_data_dir = path::Join("/usr/share", "mender");
 	string data_store = path::Join("/var/lib", "mender");
 	string fallback_conf_file = path::Join(data_store, "mender.conf");
+#endif
 };
 extern const DefaultPathsType DefaultPaths;
 
@@ -160,7 +170,11 @@ private:
 
 	string path_data_dir = conf::GetEnv("MENDER_DATA_DIR", DefaultPaths.path_data_dir);
 	string modules_path = path::Join(path_data_dir, "modules/v3");
+#ifdef _WIN32
+	string identity_script = path::Join(path_data_dir, "identity", "mender-device-identity.cmd");
+#else
 	string identity_script = path::Join(path_data_dir, "identity", "mender-device-identity");
+#endif
 	string inventory_scripts_dir = path::Join(path_data_dir, "inventory");
 
 	string data_store = conf::GetEnv("MENDER_DATASTORE_DIR", DefaultPaths.data_store);
@@ -187,7 +201,11 @@ public:
 	}
 	void SetPathDataDir(const string &path_data_dir) {
 		this->path_data_dir = path_data_dir;
+#ifdef _WIN32
+		this->identity_script = path::Join(path_data_dir, "identity", "mender-device-identity.cmd");
+#else
 		this->identity_script = path::Join(path_data_dir, "identity", "mender-device-identity");
+#endif
 		this->inventory_scripts_dir = path::Join(path_data_dir, "inventory");
 		this->modules_path = path::Join(path_data_dir, "modules/v3");
 	}

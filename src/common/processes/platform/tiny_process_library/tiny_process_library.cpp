@@ -22,6 +22,18 @@
 #include <common/log.hpp>
 #include <common/path.hpp>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#define write _write
+#define close _close
+#define pipe(fds) _pipe(fds, 4096, _O_BINARY)
+#else
+#include <signal.h>
+#include <unistd.h>
+#endif
+
 using namespace std;
 
 namespace mender {
@@ -430,6 +442,10 @@ int Process::EnsureTerminated() {
 
 void Process::Terminate() {
 	if (proc_) {
+#ifdef _WIN32
+		// On Windows, use tiny-process-library's kill method which calls TerminateProcess
+		proc_->kill(false);
+#else
 		// At the time of writing, tiny-process-library kills using SIGINT and SIGTERM, for
 		// `force = false/true`, respectively. But we want to kill with SIGTERM and SIGKILL,
 		// because:
@@ -444,16 +460,22 @@ void Process::Terminate() {
 
 		::kill(proc_->get_id(), SIGTERM);
 		::kill(-proc_->get_id(), SIGTERM);
+#endif
 	}
 }
 
 void Process::Kill() {
 	if (proc_) {
+#ifdef _WIN32
+		// On Windows, use tiny-process-library's kill method which calls TerminateProcess
+		proc_->kill(true);
+#else
 		// See comment in Terminate().
 		// proc_->kill(true);
 
 		::kill(proc_->get_id(), SIGKILL);
 		::kill(-proc_->get_id(), SIGKILL);
+#endif
 	}
 }
 

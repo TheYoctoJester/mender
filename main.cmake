@@ -50,8 +50,18 @@ option(MENDER_EMBED_MENDER_AUTH "Build mender-auth into mender-update as one bin
 
 include(cmake/build_mode.cmake)
 
+# Include Windows platform configuration if building on Windows
+if(WIN32)
+  include(cmake/windows_platform.cmake)
+endif()
+
 if("${STD_FILESYSTEM_LIB_NAME}" STREQUAL "")
-  set(STD_FILESYSTEM_LIB_NAME stdc++fs)
+  if(MSVC)
+    # MSVC doesn't need separate filesystem library linkage
+    set(STD_FILESYSTEM_LIB_NAME "")
+  else()
+    set(STD_FILESYSTEM_LIB_NAME stdc++fs)
+  endif()
 endif()
 
 # CMake doesn't generate the 'uninstall' target.
@@ -71,12 +81,15 @@ add_custom_target(uninstall-bin
   DEPENDS uninstall-mender-auth uninstall-mender-update
 )
 
-add_custom_target(install-dbus
-  DEPENDS install-dbus-interface-files install-dbus-policy-files
-)
-add_custom_target(uninstall-dbus
-  DEPENDS uninstall-dbus-interface-files uninstall-dbus-policy-files
-)
+# D-Bus targets only on non-Windows platforms
+if(NOT WIN32)
+  add_custom_target(install-dbus
+    DEPENDS install-dbus-interface-files install-dbus-policy-files
+  )
+  add_custom_target(uninstall-dbus
+    DEPENDS uninstall-dbus-interface-files uninstall-dbus-policy-files
+  )
+endif()
 
 add_subdirectory(src)
 if(BUILD_TESTS)

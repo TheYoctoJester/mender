@@ -17,7 +17,18 @@
 #include <cerrno>
 #include <fstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#define open _open
+#define close _close
+#define O_RDONLY _O_RDONLY
+#define O_NONBLOCK 0  // Windows doesn't have O_NONBLOCK for files
+// mkfifo doesn't exist on Windows - will be stubbed out below
+#else
 #include <unistd.h>
+#endif
 
 #include <filesystem>
 
@@ -256,6 +267,13 @@ expected::ExpectedStringVector DiscoverUpdateModules(const conf::MenderConfig &c
 error::Error UpdateModule::PrepareStreamNextPipe() {
 	download_->stream_next_path_ = path::Join(update_module_workdir_, "stream-next");
 
+#ifdef _WIN32
+	// Windows doesn't support POSIX named pipes (FIFOs)
+	// This functionality is not yet implemented on Windows
+	return error::Error(
+		make_error_condition(errc::function_not_supported),
+		"Named pipes (FIFOs) for Update Modules are not yet supported on Windows");
+#else
 	if (::mkfifo(download_->stream_next_path_.c_str(), 0600) != 0) {
 		int err = errno;
 		return error::Error(
@@ -263,6 +281,7 @@ error::Error UpdateModule::PrepareStreamNextPipe() {
 			"Unable to create `stream-next` at " + download_->stream_next_path_);
 	}
 	return error::NoError;
+#endif
 }
 
 error::Error UpdateModule::OpenStreamNextPipe(ExpectedWriterHandler open_handler) {
@@ -273,6 +292,14 @@ error::Error UpdateModule::OpenStreamNextPipe(ExpectedWriterHandler open_handler
 
 error::Error UpdateModule::PrepareAndOpenStreamPipe(
 	const string &path, ExpectedWriterHandler open_handler) {
+#ifdef _WIN32
+	// Windows doesn't support POSIX named pipes (FIFOs)
+	(void)path;
+	(void)open_handler;
+	return error::Error(
+		make_error_condition(errc::function_not_supported),
+		"Named pipes (FIFOs) for Update Modules are not yet supported on Windows");
+#else
 	auto fs_path = fs::path(path);
 	std::error_code ec;
 	if (!fs::create_directories(fs_path.parent_path(), ec) && ec) {
@@ -291,6 +318,7 @@ error::Error UpdateModule::PrepareAndOpenStreamPipe(
 	auto opener = make_shared<AsyncFifoOpener>(download_->event_loop_);
 	download_->current_stream_opener_ = opener;
 	return opener->AsyncOpen(path, open_handler);
+#endif
 }
 
 error::Error UpdateModule::PrepareDownloadDirectory(const string &path) {
