@@ -21,11 +21,11 @@
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#include <atomic>
 #define open _open
 #define close _close
 #define O_RDONLY _O_RDONLY
 #define O_NONBLOCK 0  // Windows doesn't have O_NONBLOCK for files
-// mkfifo doesn't exist on Windows - will be stubbed out below
 #else
 #include <unistd.h>
 #endif
@@ -56,6 +56,17 @@ namespace log = mender::common::log;
 namespace path = mender::common::path;
 
 namespace fs = std::filesystem;
+
+#ifdef _WIN32
+// Global counter for unique pipe names within a process
+static std::atomic<int> g_pipe_counter{0};
+
+// Helper to generate unique Windows named pipe paths
+static string GenerateWindowsPipePath(const string &base_name) {
+	int counter = g_pipe_counter.fetch_add(1);
+	return "\\\\.\\pipe\\mender-" + base_name + "-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(counter);
+}
+#endif
 
 error::Error CreateDataFile(
 	const fs::path &file_tree_path, const string &file_name, const string &data) {
@@ -265,15 +276,13 @@ expected::ExpectedStringVector DiscoverUpdateModules(const conf::MenderConfig &c
 }
 
 error::Error UpdateModule::PrepareStreamNextPipe() {
+#ifdef _WIN32
+	// On Windows, use a named pipe instead of a POSIX FIFO.
+	download_->stream_next_path_ = GenerateWindowsPipePath("stream-next");
+	return error::NoError;
+#else
 	download_->stream_next_path_ = path::Join(update_module_workdir_, "stream-next");
 
-#ifdef _WIN32
-	// Windows doesn't support POSIX named pipes (FIFOs)
-	// This functionality is not yet implemented on Windows
-	return error::Error(
-		make_error_condition(errc::function_not_supported),
-		"Named pipes (FIFOs) for Update Modules are not yet supported on Windows");
-#else
 	if (::mkfifo(download_->stream_next_path_.c_str(), 0600) != 0) {
 		int err = errno;
 		return error::Error(
@@ -293,12 +302,14 @@ error::Error UpdateModule::OpenStreamNextPipe(ExpectedWriterHandler open_handler
 error::Error UpdateModule::PrepareAndOpenStreamPipe(
 	const string &path, ExpectedWriterHandler open_handler) {
 #ifdef _WIN32
-	// Windows doesn't support POSIX named pipes (FIFOs)
-	(void)path;
-	(void)open_handler;
-	return error::Error(
-		make_error_condition(errc::function_not_supported),
-		"Named pipes (FIFOs) for Update Modules are not yet supported on Windows");
+	// On Windows, generate a Windows named pipe path from the POSIX-style path.
+	fs::path fs_path(path);
+	string pipe_name = fs_path.filename().string();
+	string pipe_path = GenerateWindowsPipePath(pipe_name);
+
+	auto opener = make_shared<AsyncFifoOpener>(download_->event_loop_);
+	download_->current_stream_opener_ = opener;
+	return opener->AsyncOpen(pipe_path, open_handler);
 #else
 	auto fs_path = fs::path(path);
 	std::error_code ec;
@@ -333,6 +344,10 @@ error::Error UpdateModule::PrepareDownloadDirectory(const string &path) {
 }
 
 error::Error UpdateModule::DeleteStreamsFiles() {
+#ifdef _WIN32
+	// On Windows, named pipes are automatically cleaned up when closed.
+	download_->stream_next_path_.clear();
+#else
 	try {
 		fs::path p {download_->stream_next_path_};
 		fs::remove_all(p);
@@ -343,6 +358,7 @@ error::Error UpdateModule::DeleteStreamsFiles() {
 		return error::Error(
 			e.code().default_error_condition(), "Could not remove " + download_->stream_next_path_);
 	}
+#endif
 
 	return error::NoError;
 }
@@ -359,20 +375,6 @@ AsyncFifoOpener::~AsyncFifoOpener() {
 }
 
 error::Error AsyncFifoOpener::AsyncOpen(const string &path, ExpectedWriterHandler handler) {
-	// Excerpt from fifo(7) man page:
-	// ------------------------------
-	// The FIFO must be opened on both ends (reading and writing) before data can be passed.
-	// Normally, opening the FIFO blocks until the other end is opened also.
-	//
-	// A process can open a FIFO in nonblocking mode. In this case, opening for read-only
-	// succeeds even if no one has opened on the write side yet and opening for write-only fails
-	// with ENXIO (no such device or address) unless the other end has already been opened.
-	//
-	// Under Linux, opening a FIFO for read and write will succeed both in blocking and
-	// nonblocking mode. POSIX leaves this behavior undefined.  This can be used to open a FIFO
-	// for writing while there are no readers available.
-	// ------------------------------
-	//
 	// We want to open the pipe to check if a process is going to read from it. But we cannot do
 	// this in a blocking fashion, because we are also waiting for the process to terminate,
 	// which happens for Update Modules that want the client to download the files for them. So
@@ -385,9 +387,75 @@ error::Error AsyncFifoOpener::AsyncOpen(const string &path, ExpectedWriterHandle
 
 	*cancelled_ = false;
 	path_ = path;
+
+#ifdef _WIN32
+	// On Windows, create a named pipe server and wait for a client to connect.
+	thread_ = thread([this, handler]() {
+		HANDLE hPipe = CreateNamedPipeA(
+			path_.c_str(),
+			PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED,
+			PIPE_TYPE_BYTE | PIPE_WAIT,
+			1, 65536, 65536, 0, NULL);
+
+		if (hPipe == INVALID_HANDLE_VALUE) {
+			DWORD err = GetLastError();
+			auto &cancelled = cancelled_;
+			auto &destroying = destroying_;
+			event_loop_.Post([handler, err, cancelled, destroying]() {
+				if (*destroying || *cancelled) return;
+				handler(expected::unexpected(error::Error(
+					make_error_condition(errc::io_error),
+					"CreateNamedPipe failed: error code " + std::to_string(err))));
+			});
+			return;
+		}
+
+		BOOL connected = ConnectNamedPipe(hPipe, NULL);
+		DWORD connectErr = GetLastError();
+		if (!connected && connectErr != ERROR_PIPE_CONNECTED) {
+			CloseHandle(hPipe);
+			auto &cancelled = cancelled_;
+			auto &destroying = destroying_;
+			event_loop_.Post([handler, connectErr, cancelled, destroying]() {
+				if (*destroying || *cancelled) return;
+				handler(expected::unexpected(error::Error(
+					make_error_condition(errc::io_error),
+					"ConnectNamedPipe failed: error code " + std::to_string(connectErr))));
+			});
+			return;
+		}
+
+		int fd = _open_osfhandle(reinterpret_cast<intptr_t>(hPipe), 0);
+		if (fd == -1) {
+			CloseHandle(hPipe);
+			auto &cancelled = cancelled_;
+			auto &destroying = destroying_;
+			event_loop_.Post([handler, cancelled, destroying]() {
+				if (*destroying || *cancelled) return;
+				handler(expected::unexpected(error::Error(
+					make_error_condition(errc::io_error), "_open_osfhandle failed")));
+			});
+			return;
+		}
+
+		auto writer = make_shared<events::io::AsyncFileDescriptorWriter>(event_loop_, fd);
+		io::ExpectedAsyncWriterPtr exp_writer = writer;
+
+		auto &cancelled = cancelled_;
+		auto &destroying = destroying_;
+		event_loop_.Post([handler, exp_writer, cancelled, destroying]() {
+			if (*destroying) return;
+			if (*cancelled) {
+				handler(expected::unexpected(error::Error(
+					make_error_condition(errc::operation_canceled), "AsyncFifoOpener cancelled")));
+				return;
+			}
+			handler(exp_writer);
+		});
+	});
+#else
 	thread_ = thread([this, handler]() {
 		auto writer = make_shared<events::io::AsyncFileDescriptorWriter>(event_loop_);
-		// This will block for as long as there are no FIFO readers.
 		auto err = writer->Open(path_);
 
 		io::ExpectedAsyncWriterPtr exp_writer;
@@ -400,19 +468,16 @@ error::Error AsyncFifoOpener::AsyncOpen(const string &path, ExpectedWriterHandle
 		auto &cancelled = cancelled_;
 		auto &destroying = destroying_;
 		event_loop_.Post([handler, exp_writer, cancelled, destroying]() {
-			if (*destroying) {
-				return;
-			}
-
+			if (*destroying) return;
 			if (*cancelled) {
 				handler(expected::unexpected(error::Error(
 					make_error_condition(errc::operation_canceled), "AsyncFifoOpener cancelled")));
 				return;
 			}
-
 			handler(exp_writer);
 		});
 	});
+#endif
 
 	return error::NoError;
 }
@@ -424,16 +489,23 @@ void AsyncFifoOpener::Cancel() {
 
 	*cancelled_ = true;
 
+#ifdef _WIN32
+	// On Windows, connect to the pipe as a client to unblock ConnectNamedPipe.
+	HANDLE hClient = CreateFileA(path_.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+	thread_.join();
+	if (hClient != INVALID_HANDLE_VALUE) {
+		CloseHandle(hClient);
+	}
+#else
 	// Open the other end of the pipe to jerk the first end loose.
 	int fd = ::open(path_.c_str(), O_RDONLY | O_NONBLOCK);
 	if (fd < 0) {
 		int errnum = errno;
 		log::Error(string("Cancel::open() returned error: ") + strerror(errnum));
 	}
-
 	thread_.join();
-
 	::close(fd);
+#endif
 }
 
 } // namespace v3
