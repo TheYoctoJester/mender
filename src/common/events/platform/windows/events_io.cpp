@@ -13,29 +13,44 @@
 //    limitations under the License.
 
 // Windows-specific implementation of async file descriptor I/O
-// Note: On Windows, boost::asio::windows::stream_handle requires overlapped I/O
-// which doesn't work well with regular file handles. For now, we provide stub
-// implementations that return errors, as Windows uses different IPC mechanisms.
+// Uses Windows Named Pipes with overlapped I/O for async operations.
 
 #include <common/events_io.hpp>
 
 #include <vector>
+#include <cassert>
+
+#include <windows.h>
+#include <io.h>
 
 namespace mender {
 namespace common {
 namespace events {
 namespace io {
 
-// Windows implementation - stub for now
-// Windows async file I/O is fundamentally different from POSIX and requires
-// overlapped I/O handles. For IPC on Windows, Named Pipes should be used instead.
+// Windows implementation using overlapped I/O with named pipes or files
+// opened with FILE_FLAG_OVERLAPPED.
 
 AsyncFileDescriptorReader::AsyncFileDescriptorReader(events::EventLoop &loop, int fd) :
 	pipe_(GetAsioIoContext(loop)),
 	destroying_ {make_shared<bool>(false)} {
-	// Note: On Windows, we'd need to use _get_osfhandle(fd) and ensure the handle
-	// was opened with FILE_FLAG_OVERLAPPED for async operations
-	(void)fd; // Unused in stub
+	// Convert C file descriptor to Windows HANDLE
+	// Note: The handle must have been opened with FILE_FLAG_OVERLAPPED
+	HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+	if (h != INVALID_HANDLE_VALUE) {
+		// Duplicate handle so we own it (assign() takes ownership)
+		HANDLE dup_h;
+		if (DuplicateHandle(
+				GetCurrentProcess(),
+				h,
+				GetCurrentProcess(),
+				&dup_h,
+				0,
+				FALSE,
+				DUPLICATE_SAME_ACCESS)) {
+			pipe_.assign(dup_h);
+		}
+	}
 }
 
 AsyncFileDescriptorReader::AsyncFileDescriptorReader(events::EventLoop &loop) :
@@ -49,24 +64,66 @@ AsyncFileDescriptorReader::~AsyncFileDescriptorReader() {
 }
 
 error::Error AsyncFileDescriptorReader::Open(const string &path) {
-	// On Windows, async file I/O requires FILE_FLAG_OVERLAPPED
-	// This is a stub - real implementation would use CreateFile with OVERLAPPED
-	(void)path;
-	return error::Error(
-		make_error_condition(errc::function_not_supported),
-		"AsyncFileDescriptorReader::Open not implemented on Windows");
+	// Check if this is a named pipe path (starts with \.\pipe\)
+	// Named pipes must be opened with GENERIC_READ and FILE_FLAG_OVERLAPPED
+	HANDLE h = CreateFileA(
+		path.c_str(),
+		GENERIC_READ,
+		0, // No sharing
+		NULL,
+		OPEN_EXISTING,
+		FILE_FLAG_OVERLAPPED,
+		NULL);
+
+	if (h == INVALID_HANDLE_VALUE) {
+		DWORD err = GetLastError();
+		return error::Error(
+			make_error_condition(errc::io_error),
+			"Cannot open " + path + ": error code " + std::to_string(err));
+	}
+
+	if (pipe_.is_open()) {
+		pipe_.close();
+	}
+	pipe_.assign(h);
+	return error::NoError;
 }
 
 error::Error AsyncFileDescriptorReader::AsyncRead(
 	vector<uint8_t>::iterator start,
 	vector<uint8_t>::iterator end,
 	mender::common::io::AsyncIoHandler handler) {
-	(void)start;
-	(void)end;
-	(void)handler;
-	return error::Error(
-		make_error_condition(errc::function_not_supported),
-		"AsyncFileDescriptorReader::AsyncRead not implemented on Windows");
+	if (end < start) {
+		return error::Error(
+			make_error_condition(errc::invalid_argument), "AsyncRead: end cannot precede start");
+	}
+	if (!handler) {
+		return error::Error(
+			make_error_condition(errc::invalid_argument), "AsyncRead: handler cannot be nullptr");
+	}
+
+	auto destroying {destroying_};
+
+	asio::mutable_buffer buf {&start[0], size_t(end - start)};
+	pipe_.async_read_some(buf, [destroying, handler](boost::system::error_code ec, size_t n) {
+		if (*destroying) {
+			return;
+		} else if (ec == make_error_code(asio::error::operation_aborted)) {
+			handler(expected::unexpected(error::Error(
+				make_error_condition(errc::operation_canceled), "AsyncRead cancelled")));
+		} else if (ec == make_error_code(asio::error::eof) || ec == make_error_code(asio::error::broken_pipe)) {
+			// On Windows, broken_pipe can indicate EOF for named pipes
+			// n should always be zero for EOF
+			handler(0);
+		} else if (ec) {
+			handler(expected::unexpected(
+				error::Error(ec.default_error_condition(), "AsyncRead failed: " + ec.message())));
+		} else {
+			handler(n);
+		}
+	});
+
+	return error::NoError;
 }
 
 void AsyncFileDescriptorReader::Cancel() {
@@ -78,7 +135,21 @@ void AsyncFileDescriptorReader::Cancel() {
 AsyncFileDescriptorWriter::AsyncFileDescriptorWriter(events::EventLoop &loop, int fd) :
 	pipe_(GetAsioIoContext(loop)),
 	destroying_ {make_shared<bool>(false)} {
-	(void)fd; // Unused in stub
+	// Convert C file descriptor to Windows HANDLE
+	HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+	if (h != INVALID_HANDLE_VALUE) {
+		HANDLE dup_h;
+		if (DuplicateHandle(
+				GetCurrentProcess(),
+				h,
+				GetCurrentProcess(),
+				&dup_h,
+				0,
+				FALSE,
+				DUPLICATE_SAME_ACCESS)) {
+			pipe_.assign(dup_h);
+		}
+	}
 }
 
 AsyncFileDescriptorWriter::AsyncFileDescriptorWriter(events::EventLoop &loop) :
@@ -92,23 +163,79 @@ AsyncFileDescriptorWriter::~AsyncFileDescriptorWriter() {
 }
 
 error::Error AsyncFileDescriptorWriter::Open(const string &path, Append append) {
-	(void)path;
-	(void)append;
-	return error::Error(
-		make_error_condition(errc::function_not_supported),
-		"AsyncFileDescriptorWriter::Open not implemented on Windows");
+	DWORD creation = OPEN_EXISTING;
+	DWORD flags = FILE_FLAG_OVERLAPPED;
+
+	// Check if this looks like a named pipe
+	bool is_pipe = (path.find("\\\\.\\pipe\\") == 0) || (path.find("//./pipe/") == 0);
+
+	if (!is_pipe) {
+		// Regular file - need different creation flags
+		if (append == Append::Enabled) {
+			creation = OPEN_ALWAYS;
+			flags |= FILE_APPEND_DATA;
+		} else {
+			creation = CREATE_ALWAYS;
+		}
+	}
+
+	HANDLE h = CreateFileA(
+		path.c_str(),
+		is_pipe ? GENERIC_WRITE : (GENERIC_WRITE | (append == Append::Enabled ? FILE_APPEND_DATA : 0)),
+		0, // No sharing
+		NULL,
+		creation,
+		flags,
+		NULL);
+
+	if (h == INVALID_HANDLE_VALUE) {
+		DWORD err = GetLastError();
+		return error::Error(
+			make_error_condition(errc::io_error),
+			"Cannot open " + path + ": error code " + std::to_string(err));
+	}
+
+	if (pipe_.is_open()) {
+		pipe_.close();
+	}
+	pipe_.assign(h);
+	return error::NoError;
 }
 
 error::Error AsyncFileDescriptorWriter::AsyncWrite(
 	vector<uint8_t>::const_iterator start,
 	vector<uint8_t>::const_iterator end,
 	mender::common::io::AsyncIoHandler handler) {
-	(void)start;
-	(void)end;
-	(void)handler;
-	return error::Error(
-		make_error_condition(errc::function_not_supported),
-		"AsyncFileDescriptorWriter::AsyncWrite not implemented on Windows");
+	if (end < start) {
+		return error::Error(
+			make_error_condition(errc::invalid_argument), "AsyncWrite: end cannot precede start");
+	}
+	if (!handler) {
+		return error::Error(
+			make_error_condition(errc::invalid_argument), "AsyncWrite: handler cannot be nullptr");
+	}
+
+	auto destroying {destroying_};
+
+	asio::const_buffer buf {&start[0], size_t(end - start)};
+	pipe_.async_write_some(buf, [destroying, handler](boost::system::error_code ec, size_t n) {
+		if (*destroying) {
+			return;
+		} else if (ec == make_error_code(asio::error::operation_aborted)) {
+			handler(expected::unexpected(error::Error(
+				make_error_condition(errc::operation_canceled), "AsyncWrite cancelled")));
+		} else if (ec == make_error_code(asio::error::broken_pipe)) {
+			handler(expected::unexpected(
+				error::Error(make_error_condition(errc::broken_pipe), "AsyncWrite failed")));
+		} else if (ec) {
+			handler(expected::unexpected(
+				error::Error(ec.default_error_condition(), "AsyncWrite failed: " + ec.message())));
+		} else {
+			handler(n);
+		}
+	});
+
+	return error::NoError;
 }
 
 void AsyncFileDescriptorWriter::Cancel() {
