@@ -161,9 +161,9 @@ expected::ExpectedUnorderedSet<string> ListFiles(
 		unordered_set<string> matching_files {};
 		fs::path dir_path(in_directory);
 		if (!fs::exists(dir_path)) {
-			auto err {errno};
+			// Use ENOENT explicitly since fs::exists doesn't set errno on Windows
 			return expected::unexpected(error::Error(
-				generic_category().default_error_condition(err),
+				generic_category().default_error_condition(ENOENT),
 				"No such file or directory: " + in_directory));
 		}
 

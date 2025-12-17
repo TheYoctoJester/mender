@@ -27,6 +27,8 @@ namespace path {
 using namespace std;
 
 expected::ExpectedBool IsWithinOrEqual(const string &check_path, const string &target_dir) {
+	namespace fs = std::filesystem;
+
 	auto exp_canonical_check_path = WeaklyCanonical(check_path);
 	if (!exp_canonical_check_path.has_value()) {
 		return expected::unexpected(exp_canonical_check_path.error().WithContext(
@@ -39,23 +41,29 @@ expected::ExpectedBool IsWithinOrEqual(const string &check_path, const string &t
 			"Error creating canonical path, target directory: '" + target_dir));
 	}
 
-	auto canonical_check_path = exp_canonical_check_path.value();
-	auto canonical_target_dir = exp_canonical_target_dir.value();
+	// Use std::filesystem for proper cross-platform path comparison
+	fs::path canonical_check = exp_canonical_check_path.value();
+	fs::path canonical_target = exp_canonical_target_dir.value();
 
-	// Terminate both with "/", otherwise we could mistakenly say that
-	// 1. /test/testabc in contained within /test/test
-	// 2. /test/test in not equal to /test/test/
-	if (canonical_check_path.back() != '/') {
-		canonical_check_path += '/';
-	}
-	if (canonical_target_dir.back() != '/') {
-		canonical_target_dir += '/';
-	}
+	// Check if check_path starts with target_dir by comparing path components
+	// This properly handles both Windows backslashes and Unix forward slashes
+	auto check_it = canonical_check.begin();
+	auto target_it = canonical_target.begin();
 
-	if (canonical_check_path.rfind(canonical_target_dir, 0) == 0) {
-		return true;
+	while (target_it != canonical_target.end()) {
+		if (check_it == canonical_check.end()) {
+			// check_path is shorter than target_dir, so cannot be within
+			return false;
+		}
+		if (*check_it != *target_it) {
+			// Paths diverge, check_path is not within target_dir
+			return false;
+		}
+		++check_it;
+		++target_it;
 	}
-	return false;
+	// All components of target_dir matched at the start of check_path
+	return true;
 }
 
 } // namespace path

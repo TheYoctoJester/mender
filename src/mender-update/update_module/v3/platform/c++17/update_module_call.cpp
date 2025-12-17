@@ -84,9 +84,16 @@ error::Error UpdateModule::StateRunner::AsyncCallState(
 					auto lines = mender::common::SplitString(string(data, size), "\n");
 					if (lines.size() >= 1) {
 						*output = lines[0];
+						// Strip trailing CR (Windows line endings are \r\n)
+						if (!output->empty() && output->back() == '\r') {
+							output->pop_back();
+						}
 						first_line_captured = true;
 					}
-					if (lines.size() > 2 || (lines.size() == 2 && lines[1] != "")) {
+					// Check for too many lines. Handle Windows CRLF where the second
+					// "line" after split might be just "\r" (from the final \r\n)
+					if (lines.size() > 2 ||
+						(lines.size() == 2 && lines[1] != "" && lines[1] != "\r")) {
 						too_many_lines = true;
 					}
 				} else {
