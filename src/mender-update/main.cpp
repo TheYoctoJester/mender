@@ -28,5 +28,9 @@ int main(int argc, char *argv[]) {
 		args = vector<string>(argv + 1, argv + argc);
 	}
 
-	return mender::update::cli::Main(args);
+	int result = mender::update::cli::Main(args);
+
+	mender::common::setup::GlobalCleanup();
+
+	return result;
 }

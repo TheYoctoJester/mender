@@ -29,6 +29,10 @@ void GlobalSetup() {
 	sigaction(SIGPIPE, &action, nullptr);
 }
 
+void GlobalCleanup() {
+	// No cleanup needed on POSIX
+}
+
 } // namespace setup
 } // namespace common
 } // namespace mender

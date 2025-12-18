@@ -56,6 +56,11 @@ error::Error StateMachine::RegisterSignalHandlers() {
 	return error::NoError;
 }
 
+void CleanupSignalHandlers() {
+	// No cleanup needed on POSIX - signal handlers are automatically
+	// unregistered when the process exits
+}
+
 } // namespace daemon
 } // namespace update
 } // namespace mender

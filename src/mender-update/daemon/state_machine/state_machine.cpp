@@ -487,6 +487,10 @@ error::Error StateMachine::Run() {
 	log::Info("Running mender-update " + conf::kMenderVersion);
 
 	event_loop_.Run();
+
+	// Clean up signal handlers after the event loop exits
+	CleanupSignalHandlers();
+
 	return exit_state_.exit_error;
 }
 
