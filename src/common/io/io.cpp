@@ -510,7 +510,7 @@ unique_ptr<istream> Reader::GetStream() {
 ExpectedIfstream OpenIfstream(const string &path) {
 	ifstream is;
 	errno = 0;
-	is.open(path);
+	is.open(path, ios::binary);
 	if (!is) {
 		int io_errno = errno;
 		return ExpectedIfstream(expected::unexpected(error::Error(
@@ -531,7 +531,7 @@ ExpectedSharedIfstream OpenSharedIfstream(const string &path) {
 ExpectedOfstream OpenOfstream(const string &path, bool append) {
 	ofstream os;
 	errno = 0;
-	os.open(path, append ? ios::app : ios::out);
+	os.open(path, (append ? ios::app : ios::out) | ios::binary);
 	if (!os) {
 		int io_errno = errno;
 		return ExpectedOfstream(expected::unexpected(error::Error(

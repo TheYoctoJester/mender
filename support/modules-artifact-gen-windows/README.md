@@ -83,10 +83,6 @@ single-file-artifact-gen-win.cmd -n "test-v1.0" -t "windows-x64" -d "C:\Temp\dep
    mender-update.exe commit
    ```
 
-### Known Issues
-
-**CRLF Line Endings**: There is a known issue with the Windows mender-update client where files containing Windows-style line endings (CRLF / `\r\n`) may fail checksum verification during installation. Binary files and text files without trailing newlines work correctly. This is a client-side bug being tracked.
-
 ### Related Files
 
 - Update Module: `support/modules-windows/single-file-win.ps1`
