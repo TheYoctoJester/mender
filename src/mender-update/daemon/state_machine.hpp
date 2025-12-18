@@ -35,6 +35,9 @@ namespace sm = mender::common::state_machine;
 
 namespace context = mender::update::context;
 
+// Cleanup signal handlers - should be called after the event loop exits
+void CleanupSignalHandlers();
+
 class StateMachine {
 public:
 	StateMachine(Context &ctx, events::EventLoop &event_loop);

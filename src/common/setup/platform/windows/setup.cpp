@@ -28,10 +28,21 @@ void GlobalSetup() {
 #ifdef _WIN32
 	// Initialize Winsock for network operations
 	WSADATA wsaData;
-	WSAStartup(MAKEWORD(2, 2), &wsaData);
+	int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+	if (result != 0) {
+		// Log error but continue - network operations will fail gracefully
+		// This is a best-effort initialization
+	}
 
 	// Windows doesn't have SIGPIPE - broken pipe errors are handled
 	// through return values from send/recv calls
+#endif
+}
+
+void GlobalCleanup() {
+#ifdef _WIN32
+	// Cleanup Winsock
+	WSACleanup();
 #endif
 }
 

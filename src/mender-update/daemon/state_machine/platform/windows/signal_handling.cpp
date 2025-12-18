@@ -155,6 +155,39 @@ error::Error StateMachine::RegisterSignalHandlers() {
     return error::NoError;
 }
 
+// Cleanup function to be called during shutdown
+void CleanupSignalHandlers() {
+    // Signal thread to stop
+    g_running = false;
+    if (g_shutdown_event) {
+        SetEvent(g_shutdown_event);
+    }
+
+    // Wait for event thread to finish
+    if (g_event_thread.joinable()) {
+        g_event_thread.join();
+    }
+
+    // Close event handles
+    if (g_check_update_event) {
+        CloseHandle(g_check_update_event);
+        g_check_update_event = NULL;
+    }
+    if (g_send_inventory_event) {
+        CloseHandle(g_send_inventory_event);
+        g_send_inventory_event = NULL;
+    }
+    if (g_shutdown_event) {
+        CloseHandle(g_shutdown_event);
+        g_shutdown_event = NULL;
+    }
+
+    // Clear state machine pointer
+    g_state_machine = nullptr;
+
+    log::Debug("Windows signal handlers cleaned up");
+}
+
 } // namespace daemon
 } // namespace update
 } // namespace mender

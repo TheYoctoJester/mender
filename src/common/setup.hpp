@@ -22,6 +22,9 @@ namespace setup {
 // Global setup that all Mender binaries generally want to do.
 void GlobalSetup();
 
+// Global cleanup that should be called before exit.
+void GlobalCleanup();
+
 } // namespace setup
 } // namespace common
 } // namespace mender

@@ -24,6 +24,7 @@
 #include <string>
 
 #include <common/error.hpp>
+#include <common/log.hpp>
 
 namespace mender {
 namespace common {
@@ -31,6 +32,7 @@ namespace path {
 
 using namespace std;
 namespace fs = std::filesystem;
+namespace log = mender::common::log;
 
 // Windows doesn't use POSIX permission bits - we simplify to basic read/write
 expected::ExpectedInt FileCreate(const string &path, vector<Perms> perms) {
@@ -82,6 +84,7 @@ error::Error DataSyncRecursively(const string &dir) {
 		if (hFile == INVALID_HANDLE_VALUE) {
 			// Skip files we can't open for write (e.g., read-only files)
 			// This is best-effort synchronization
+			log::Debug("DataSyncRecursively: Skipping file (cannot open for write): " + entry.path().string());
 			continue;
 		}
 
@@ -91,6 +94,7 @@ error::Error DataSyncRecursively(const string &dir) {
 
 		if (!result && err != ERROR_SUCCESS) {
 			// Skip files we can't flush - best-effort sync
+			log::Debug("DataSyncRecursively: Skipping file (flush failed): " + entry.path().string());
 			continue;
 		}
 	}
