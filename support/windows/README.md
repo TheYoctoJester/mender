@@ -92,11 +92,41 @@ Run from an elevated (Administrator) PowerShell prompt:
 Or double-click `service\install-service.cmd` and select "Run as administrator".
 
 The script will:
-1. Download NSSM automatically (if not already installed)
-2. Install the Mender client as a Windows service
-3. Configure automatic startup and restart-on-failure
-4. Set up logging to `%ProgramData%\Mender\logs\mender-service.log`
-5. Start the service
+1. Auto-detect `mender-update.exe` (searches multiple locations)
+2. Download NSSM automatically (tries multiple sources)
+3. Install the Mender client as a Windows service
+4. Configure automatic startup and restart-on-failure
+5. Set up logging to `%ProgramData%\Mender\logs\mender-service.log`
+6. Start the service
+
+### Binary Auto-Detection
+
+The install script automatically searches for `mender-update.exe` in these locations:
+
+1. `%ProgramFiles%\Mender\mender-update.exe` (production install)
+2. `<repository>\build\src\mender-update\Release\mender-update.exe` (Release build)
+3. `<repository>\build\src\mender-update\Debug\mender-update.exe` (Debug build)
+4. `%USERPROFILE%\mender\build\src\mender-update\Release\mender-update.exe`
+
+### NSSM (Service Manager)
+
+The scripts use [NSSM (Non-Sucking Service Manager)](https://nssm.cc/) to run `mender-update daemon` as a Windows service. NSSM is downloaded automatically from multiple sources:
+
+1. `nssm.cc/release` (primary)
+2. `nssm.cc/ci` (CI builds)
+3. GitHub mirror
+
+If automatic download fails (e.g., network issues), download NSSM manually:
+
+1. Download from https://nssm.cc/download
+2. Extract `nssm.exe` from the `win64` folder (or `win32` for 32-bit systems)
+3. Run the install script with the `-NssmPath` parameter:
+
+```powershell
+.\service\install-service.ps1 -NssmPath "C:\path\to\nssm.exe"
+```
+
+NSSM is installed to `%ProgramData%\Mender\tools\nssm.exe` for future use.
 
 ### Custom Installation
 
@@ -106,16 +136,16 @@ Specify a custom path to the Mender binary:
 .\service\install-service.ps1 -MenderPath "D:\Mender\mender-update.exe"
 ```
 
-Use an existing NSSM installation:
-
-```powershell
-.\service\install-service.ps1 -NssmPath "C:\tools\nssm.exe"
-```
-
 Use a custom service name:
 
 ```powershell
 .\service\install-service.ps1 -ServiceName "MyMenderService"
+```
+
+Skip automatic NSSM download (fail if not found):
+
+```powershell
+.\service\install-service.ps1 -NoDownload
 ```
 
 ### Service Management
