@@ -34,6 +34,40 @@ Copy-Item "identity\mender-device-identity.cmd" "$env:ProgramData\Mender\identit
 Copy-Item "inventory\*.cmd" "$env:ProgramData\Mender\inventory\"
 ```
 
+## Mender Installation Layout
+
+The scripts expect Mender components to be installed in standard locations:
+
+```
+%ProgramFiles%\Mender\
+└── mender-update.exe              # Main Mender client binary
+
+%ProgramData%\Mender\
+├── device_type                    # Device type configuration
+├── identity\
+│   └── mender-device-identity.cmd
+├── inventory\
+│   └── *.cmd                      # Inventory scripts
+└── modules\
+    └── v3\                        # Update modules directory
+        ├── single-file-win.cmd
+        └── ...
+```
+
+### device_type File
+
+The `device_type` file should contain a single line specifying the device type:
+
+```
+device_type=windows-x64
+```
+
+If this file does not exist, `mender-inventory-device-type.cmd` defaults to `windows-x64`.
+
+### Update Modules
+
+Update modules should be installed in `%ProgramData%\Mender\modules\v3\`. The `mender-inventory-update-modules.cmd` script lists all files in this directory.
+
 ## Device Identity
 
 The `mender-device-identity.cmd` script provides a unique device identifier using the MAC address of the first active network adapter (sorted by interface index). This matches the behavior of the Linux identity script.
@@ -44,6 +78,8 @@ mac=bc:24:11:67:bd:86
 ```
 
 The MAC address is converted from Windows format (AA-BB-CC-DD-EE-FF) to Linux format (aa:bb:cc:dd:ee:ff) for consistency.
+
+**Note**: The device must have at least one active network adapter with a MAC address. If no suitable adapter is found, the script exits with an error.
 
 ## Inventory Scripts
 
@@ -57,6 +93,17 @@ The inventory scripts collect system information and report it to the Mender ser
 | `mender-inventory-os.cmd` | OS name, version, build number |
 | `mender-inventory-provides.cmd` | Artifact provides (installed software) |
 | `mender-inventory-update-modules.cmd` | Installed update modules |
+
+### Script Details
+
+**mender-inventory-provides.cmd**: Retrieves artifact provides by running `mender-update show-provides`. The script searches for `mender-update.exe` in the following locations (in order):
+1. System PATH
+2. `%ProgramFiles%\Mender\mender-update.exe`
+3. `%USERPROFILE%\mender\build\src\mender-update\Release\mender-update.exe` (development builds)
+
+If `mender-update.exe` is not found, the script exits silently without reporting any provides.
+
+**mender-inventory-update-modules.cmd**: Lists all files in `%ProgramData%\Mender\modules\v3\` as a comma-separated list. Returns an empty value if the directory does not exist.
 
 ### Example Output
 
@@ -85,6 +132,7 @@ update_modules=single-file-win.cmd,single-file-win.ps1
 
 - Windows 10 or later
 - PowerShell 5.1 or later (included with Windows 10+)
+- At least one active network adapter (for device identity)
 - Administrator privileges may be required for some inventory queries
 
 ## Customization
