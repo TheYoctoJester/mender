@@ -15,6 +15,11 @@ windows/
 │   ├── mender-inventory-os.cmd
 │   ├── mender-inventory-provides.cmd
 │   └── mender-inventory-update-modules.cmd
+├── service/
+│   ├── install-service.ps1           # Service installation script
+│   ├── install-service.cmd           # CMD wrapper for installation
+│   ├── uninstall-service.ps1         # Service removal script
+│   └── uninstall-service.cmd         # CMD wrapper for removal
 └── README.md
 ```
 
@@ -48,10 +53,14 @@ The scripts expect Mender components to be installed in standard locations:
 │   └── mender-device-identity.cmd
 ├── inventory\
 │   └── *.cmd                      # Inventory scripts
-└── modules\
-    └── v3\                        # Update modules directory
-        ├── single-file-win.cmd
-        └── ...
+├── logs\
+│   └── mender-service.log         # Service log file
+├── modules\
+│   └── v3\                        # Update modules directory
+│       ├── single-file-win.cmd
+│       └── ...
+└── tools\
+    └── nssm.exe                   # Service manager (auto-downloaded)
 ```
 
 ### device_type File
@@ -67,6 +76,79 @@ If this file does not exist, `mender-inventory-device-type.cmd` defaults to `win
 ### Update Modules
 
 Update modules should be installed in `%ProgramData%\Mender\modules\v3\`. The `mender-inventory-update-modules.cmd` script lists all files in this directory.
+
+## Running as a Windows Service
+
+The Mender client can be installed as a Windows service to run automatically on system boot. The service scripts use [NSSM (Non-Sucking Service Manager)](https://nssm.cc/) to manage the service.
+
+### Quick Install
+
+Run from an elevated (Administrator) PowerShell prompt:
+
+```powershell
+.\service\install-service.ps1
+```
+
+Or double-click `service\install-service.cmd` and select "Run as administrator".
+
+The script will:
+1. Download NSSM automatically (if not already installed)
+2. Install the Mender client as a Windows service
+3. Configure automatic startup and restart-on-failure
+4. Set up logging to `%ProgramData%\Mender\logs\mender-service.log`
+5. Start the service
+
+### Custom Installation
+
+Specify a custom path to the Mender binary:
+
+```powershell
+.\service\install-service.ps1 -MenderPath "D:\Mender\mender-update.exe"
+```
+
+Use an existing NSSM installation:
+
+```powershell
+.\service\install-service.ps1 -NssmPath "C:\tools\nssm.exe"
+```
+
+Use a custom service name:
+
+```powershell
+.\service\install-service.ps1 -ServiceName "MyMenderService"
+```
+
+### Service Management
+
+After installation, manage the service using standard Windows commands:
+
+```powershell
+# Check status
+Get-Service MenderClient
+
+# Stop service
+Stop-Service MenderClient
+
+# Start service
+Start-Service MenderClient
+
+# View logs
+Get-Content "$env:ProgramData\Mender\logs\mender-service.log" -Tail 50
+```
+
+### Uninstall
+
+Remove the service:
+
+```powershell
+.\service\uninstall-service.ps1
+```
+
+Remove service, logs, and NSSM:
+
+```powershell
+.\service\uninstall-service.ps1 -RemoveLogs -RemoveNssm
+```
 
 ## Device Identity
 
