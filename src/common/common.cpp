@@ -30,7 +30,7 @@ mender::common::expected::ExpectedLongLong StringToLongLong(const string &str, i
 		return expected::unexpected(mender::common::error::Error(
 			std::generic_category().default_error_condition(int_error), ""));
 	}
-	if (end != &*str.end()) {
+	if (end != str.c_str() + str.size()) {
 		return expected::unexpected(mender::common::error::Error(
 			std::make_error_condition(errc::invalid_argument),
 			str + " had trailing non-numeric data"));
