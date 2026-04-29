@@ -60,6 +60,7 @@ public:
 private:
 #ifdef MENDER_USE_BOOST_ASIO
 	asio::io_context ctx_;
+	size_t run_depth_ {0};
 #endif // MENDER_USE_BOOST_ASIO
 
 	friend class EventLoopObject;

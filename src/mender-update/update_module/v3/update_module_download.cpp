@@ -196,6 +196,7 @@ void UpdateModule::StreamNextOpenHandler(io::ExpectedAsyncWriterPtr writer) {
 		make_shared<events::io::AsyncReaderFromReader>(download_->event_loop_, progress_reader);
 	download_->current_payload_name_ = payload_reader->Name();
 	download_->current_payload_size_ = payload_reader->Size();
+	download_->written_ = 0;
 
 	auto stream_path =
 		path::Join(update_module_workdir_, string("streams"), download_->current_payload_name_);
@@ -276,16 +277,27 @@ void UpdateModule::PayloadReadHandler(io::ExpectedSize result) {
 		download_->current_payload_reader_.reset();
 		DownloadErrorHandler(result.error());
 	} else if (result.value() > 0) {
-		DownloadErrorHandler(download_->current_stream_writer_->AsyncWrite(
+		auto writer = download_->current_stream_writer_;
+		auto err = writer->AsyncWrite(
 			download_->buffer_.begin(),
 			download_->buffer_.begin() + result.value(),
 			[this, result](io::ExpectedSize write_result) {
 				StreamWriteHandler(0, result.value(), write_result);
-			}));
+			});
+		DownloadErrorHandler(err);
 	} else {
 		// Close streams.
 		download_->current_stream_writer_.reset();
 		download_->current_payload_reader_.reset();
+
+		if (download_->written_ != download_->current_payload_size_) {
+			DownloadErrorHandler(error::Error(
+				make_error_condition(errc::io_error),
+				"Payload size mismatch while downloading '" + download_->current_payload_name_
+					+ "': wrote " + to_string(download_->written_) + " bytes, expected "
+					+ to_string(download_->current_payload_size_)));
+			return;
+		}
 
 		if (download_->downloading_to_files_) {
 			StartDownloadToFile();
@@ -395,6 +407,8 @@ void UpdateModule::StartDownloadToFile() {
 	download_->current_payload_reader_ =
 		make_shared<events::io::AsyncReaderFromReader>(download_->event_loop_, payload_reader);
 	download_->current_payload_name_ = payload_reader->Name();
+	download_->current_payload_size_ = payload_reader->Size();
+	download_->written_ = 0;
 
 	auto stream_path = path::Join(update_module_workdir_, string("files"));
 	auto err = PrepareDownloadDirectory(stream_path);

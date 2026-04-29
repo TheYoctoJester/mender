@@ -48,7 +48,12 @@ AsyncFileDescriptorReader::AsyncFileDescriptorReader(events::EventLoop &loop, in
 				0,
 				FALSE,
 				DUPLICATE_SAME_ACCESS)) {
-			pipe_.assign(dup_h);
+			boost::system::error_code ec;
+			const auto assigned = pipe_.assign(dup_h, ec);
+			(void)assigned;
+			if (ec) {
+				CloseHandle(dup_h);
+			}
 		}
 	}
 }
@@ -83,9 +88,26 @@ error::Error AsyncFileDescriptorReader::Open(const string &path) {
 	}
 
 	if (pipe_.is_open()) {
-		pipe_.close();
+		boost::system::error_code close_ec;
+		const auto closed = pipe_.close(close_ec);
+		(void)closed;
+		if (close_ec) {
+			CloseHandle(h);
+			return error::Error(
+				close_ec.default_error_condition(),
+				"Cannot close previous handle before opening " + path + ": "
+					+ close_ec.message());
+		}
 	}
-	pipe_.assign(h);
+	boost::system::error_code assign_ec;
+	const auto assigned = pipe_.assign(h, assign_ec);
+	(void)assigned;
+	if (assign_ec) {
+		CloseHandle(h);
+		return error::Error(
+			assign_ec.default_error_condition(),
+			"Cannot assign handle for " + path + ": " + assign_ec.message());
+	}
 	return error::NoError;
 }
 
@@ -128,7 +150,9 @@ error::Error AsyncFileDescriptorReader::AsyncRead(
 
 void AsyncFileDescriptorReader::Cancel() {
 	if (pipe_.is_open()) {
-		pipe_.cancel();
+		boost::system::error_code ec;
+		const auto cancelled = pipe_.cancel(ec);
+		(void)cancelled;
 	}
 }
 
@@ -147,7 +171,12 @@ AsyncFileDescriptorWriter::AsyncFileDescriptorWriter(events::EventLoop &loop, in
 				0,
 				FALSE,
 				DUPLICATE_SAME_ACCESS)) {
-			pipe_.assign(dup_h);
+			boost::system::error_code ec;
+			const auto assigned = pipe_.assign(dup_h, ec);
+			(void)assigned;
+			if (ec) {
+				CloseHandle(dup_h);
+			}
 		}
 	}
 }
@@ -164,24 +193,31 @@ AsyncFileDescriptorWriter::~AsyncFileDescriptorWriter() {
 
 error::Error AsyncFileDescriptorWriter::Open(const string &path, Append append) {
 	DWORD creation = OPEN_EXISTING;
-	DWORD flags = FILE_FLAG_OVERLAPPED;
+	DWORD flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED;
+	DWORD access = GENERIC_WRITE;
 
 	// Check if this looks like a named pipe
 	bool is_pipe = (path.find("\\\\.\\pipe\\") == 0) || (path.find("//./pipe/") == 0);
+	is_pipe_ = is_pipe;
 
 	if (!is_pipe) {
 		// Regular file - need different creation flags
+		flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED;
 		if (append == Append::Enabled) {
 			creation = OPEN_ALWAYS;
-			flags |= FILE_APPEND_DATA;
+			access = GENERIC_WRITE;
 		} else {
 			creation = CREATE_ALWAYS;
+			access = GENERIC_WRITE;
 		}
+	} else {
+		flags = FILE_FLAG_OVERLAPPED;
+		access = GENERIC_WRITE;
 	}
 
 	HANDLE h = CreateFileA(
 		path.c_str(),
-		is_pipe ? GENERIC_WRITE : (GENERIC_WRITE | (append == Append::Enabled ? FILE_APPEND_DATA : 0)),
+		access,
 		0, // No sharing
 		NULL,
 		creation,
@@ -196,9 +232,42 @@ error::Error AsyncFileDescriptorWriter::Open(const string &path, Append append) 
 	}
 
 	if (pipe_.is_open()) {
-		pipe_.close();
+		boost::system::error_code close_ec;
+		const auto closed = pipe_.close(close_ec);
+		(void)closed;
+		if (close_ec) {
+			CloseHandle(h);
+			return error::Error(
+				close_ec.default_error_condition(),
+				"Cannot close previous handle before opening " + path + ": "
+					+ close_ec.message());
+		}
 	}
-	pipe_.assign(h);
+	boost::system::error_code assign_ec;
+	const auto assigned = pipe_.assign(h, assign_ec);
+	(void)assigned;
+	if (assign_ec) {
+		CloseHandle(h);
+		return error::Error(
+			assign_ec.default_error_condition(),
+			"Cannot assign handle for " + path + ": " + assign_ec.message());
+	}
+
+	if (!is_pipe_) {
+		if (append == Append::Enabled) {
+			LARGE_INTEGER li;
+			if (!GetFileSizeEx(h, &li)) {
+				DWORD err = GetLastError();
+				return error::Error(
+					std::error_code(static_cast<int>(err), std::system_category())
+						.default_error_condition(),
+					"Cannot get file size for append mode: error code " + std::to_string(err));
+			}
+			file_offset_ = static_cast<uint64_t>(li.QuadPart);
+		} else {
+			file_offset_ = 0;
+		}
+	}
 	return error::NoError;
 }
 
@@ -216,8 +285,70 @@ error::Error AsyncFileDescriptorWriter::AsyncWrite(
 	}
 
 	auto destroying {destroying_};
+	auto nbytes = size_t(end - start);
 
-	asio::const_buffer buf {&start[0], size_t(end - start)};
+	if (!is_pipe_) {
+		DWORD written = 0;
+		BOOL ok = TRUE;
+		DWORD write_err = ERROR_SUCCESS;
+
+		if (nbytes > 0) {
+			if (ok) {
+				auto data_ptr = reinterpret_cast<LPCVOID>(&(*start));
+				OVERLAPPED ov {};
+				ov.Offset = static_cast<DWORD>(file_offset_ & 0xFFFFFFFFULL);
+				ov.OffsetHigh = static_cast<DWORD>((file_offset_ >> 32) & 0xFFFFFFFFULL);
+				ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+				if (ov.hEvent == NULL) {
+					ok = FALSE;
+					write_err = GetLastError();
+				} else {
+				ok = WriteFile(
+					pipe_.native_handle(),
+					data_ptr,
+					static_cast<DWORD>(nbytes),
+					&written,
+					&ov);
+					if (!ok) {
+						write_err = GetLastError();
+						if (write_err == ERROR_IO_PENDING) {
+							DWORD wait_rc = WaitForSingleObject(ov.hEvent, INFINITE);
+							if (wait_rc == WAIT_OBJECT_0) {
+								ok = GetOverlappedResult(pipe_.native_handle(), &ov, &written, FALSE);
+								if (!ok) {
+									write_err = GetLastError();
+								}
+							} else {
+								ok = FALSE;
+								write_err = GetLastError();
+								if (write_err == ERROR_SUCCESS) {
+									write_err = ERROR_IO_PENDING;
+								}
+							}
+						}
+					}
+					CloseHandle(ov.hEvent);
+				}
+			}
+		}
+
+		if (*destroying) {
+			return error::NoError;
+		} else if (!ok) {
+			DWORD err = (write_err == ERROR_SUCCESS ? static_cast<DWORD>(ERROR_GEN_FAILURE) : write_err);
+			handler(expected::unexpected(error::Error(
+				std::error_code(static_cast<int>(err), std::system_category()).default_error_condition(),
+				"AsyncWrite failed: error code " + std::to_string(err))));
+		} else {
+			file_offset_ += written;
+			handler(size_t(written));
+		}
+
+		return error::NoError;
+	}
+
+	const void *data_ptr = (nbytes > 0) ? reinterpret_cast<const void *>(&(*start)) : nullptr;
+	asio::const_buffer buf {data_ptr, nbytes};
 	pipe_.async_write_some(buf, [destroying, handler](boost::system::error_code ec, size_t n) {
 		if (*destroying) {
 			return;
@@ -240,7 +371,9 @@ error::Error AsyncFileDescriptorWriter::AsyncWrite(
 
 void AsyncFileDescriptorWriter::Cancel() {
 	if (pipe_.is_open()) {
-		pipe_.cancel();
+		boost::system::error_code ec;
+		const auto cancelled = pipe_.cancel(ec);
+		(void)cancelled;
 	}
 }
 

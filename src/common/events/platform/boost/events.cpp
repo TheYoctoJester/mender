@@ -32,7 +32,25 @@ void EventLoop::Run() {
 	if (stopped) {
 		ctx_.restart();
 	}
+	const bool top_level_run = (run_depth_ == 0);
+	run_depth_++;
+
+	optional<asio::executor_work_guard<asio::io_context::executor_type>> work_guard;
+	if (top_level_run) {
+		// Keep only the top-level run() alive when there are temporarily no pending
+		// handlers. Recursive run() invocations (used by blocking adapter helpers) must be
+		// allowed to return naturally to avoid deadlocks.
+		work_guard.emplace(asio::make_work_guard(ctx_));
+	}
+
 	ctx_.run();
+
+	if (work_guard) {
+		work_guard->reset();
+	}
+
+	run_depth_--;
+
 	if (!stopped) {
 		// For recursive invocations. If we were originally running, but we stopped and
 		// exited this level, then keep the running state of the previous recursive level.
