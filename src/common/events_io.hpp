@@ -85,6 +85,8 @@ private:
 #ifdef MENDER_USE_BOOST_ASIO
 #ifdef _WIN32
 	asio::windows::stream_handle pipe_;
+	bool is_pipe_ {false};
+	uint64_t file_offset_ {0};
 #else
 	asio::posix::stream_descriptor pipe_;
 #endif

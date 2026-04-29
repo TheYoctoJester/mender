@@ -66,3 +66,6 @@ Testing
 
 # vcpkg
 vcpkg_installed/
+
+# added by Wolfgang Baron
+.cache/

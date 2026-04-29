@@ -9,6 +9,11 @@ target_link_libraries(io_test PUBLIC common_io common_error common_testing main_
 gtest_discover_tests(io_test NO_PRETTY_VALUES)
 add_dependencies(tests io_test)
 
+add_executable(common_test EXCLUDE_FROM_ALL common_test.cpp)
+target_link_libraries(common_test PUBLIC common main_test gmock)
+gtest_discover_tests(common_test NO_PRETTY_VALUES)
+add_dependencies(tests common_test)
+
 add_library(common_testing EXCLUDE_FROM_ALL STATIC testing.cpp)
 target_compile_options(common_testing PRIVATE ${PLATFORM_SPECIFIC_COMPILE_OPTIONS})
 target_link_libraries(common_testing PUBLIC

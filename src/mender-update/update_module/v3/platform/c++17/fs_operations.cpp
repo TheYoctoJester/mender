@@ -410,18 +410,83 @@ error::Error AsyncFifoOpener::AsyncOpen(const string &path, ExpectedWriterHandle
 			return;
 		}
 
-		BOOL connected = ConnectNamedPipe(hPipe, NULL);
-		DWORD connectErr = GetLastError();
-		if (!connected && connectErr != ERROR_PIPE_CONNECTED) {
+		OVERLAPPED ov {};
+		ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+		if (ov.hEvent == NULL) {
+			DWORD err = GetLastError();
 			CloseHandle(hPipe);
 			auto &cancelled = cancelled_;
 			auto &destroying = destroying_;
-			event_loop_.Post([handler, connectErr, cancelled, destroying]() {
+			event_loop_.Post([handler, err, cancelled, destroying]() {
 				if (*destroying || *cancelled) return;
 				handler(expected::unexpected(error::Error(
 					make_error_condition(errc::io_error),
-					"ConnectNamedPipe failed: error code " + std::to_string(connectErr))));
+					"CreateEvent failed: error code " + std::to_string(err))));
 			});
+			return;
+		}
+
+		bool connected = false;
+		BOOL connect_ret = ConnectNamedPipe(hPipe, &ov);
+		if (connect_ret) {
+			connected = true;
+		} else {
+			DWORD connect_err = GetLastError();
+			if (connect_err == ERROR_PIPE_CONNECTED) {
+				connected = true;
+			} else if (connect_err == ERROR_IO_PENDING) {
+				while (!*cancelled_ && !*destroying_) {
+					DWORD wait_rc = WaitForSingleObject(ov.hEvent, 100);
+					if (wait_rc == WAIT_OBJECT_0) {
+						DWORD transferred = 0;
+						if (GetOverlappedResult(hPipe, &ov, &transferred, FALSE)) {
+							connected = true;
+						} else {
+							DWORD gr_err = GetLastError();
+							if (gr_err == ERROR_PIPE_CONNECTED) {
+								connected = true;
+							} else {
+								connect_err = gr_err;
+							}
+						}
+						break;
+					}
+				}
+				if (!connected && (*cancelled_ || *destroying_)) {
+					CancelIoEx(hPipe, &ov);
+				}
+			} else {
+				CloseHandle(ov.hEvent);
+				CloseHandle(hPipe);
+				auto &cancelled = cancelled_;
+				auto &destroying = destroying_;
+				event_loop_.Post([handler, connect_err, cancelled, destroying]() {
+					if (*destroying || *cancelled) return;
+					handler(expected::unexpected(error::Error(
+						make_error_condition(errc::io_error),
+						"ConnectNamedPipe failed: error code " + std::to_string(connect_err))));
+				});
+				return;
+			}
+
+			if (!connected && !*cancelled_ && !*destroying_) {
+				CloseHandle(ov.hEvent);
+				CloseHandle(hPipe);
+				auto &cancelled = cancelled_;
+				auto &destroying = destroying_;
+				event_loop_.Post([handler, cancelled, destroying]() {
+					if (*destroying || *cancelled) return;
+					handler(expected::unexpected(error::Error(
+						make_error_condition(errc::timed_out),
+						"Timed out waiting for Update Module to open named pipe")));
+				});
+				return;
+			}
+		}
+
+		CloseHandle(ov.hEvent);
+		if (!connected) {
+			CloseHandle(hPipe);
 			return;
 		}
 
@@ -490,11 +555,8 @@ void AsyncFifoOpener::Cancel() {
 	*cancelled_ = true;
 
 #ifdef _WIN32
-	// On Windows, connect to the pipe as a client to unblock ConnectNamedPipe.
-	HANDLE hClient = CreateFileA(path_.c_str(), GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
-	thread_.join();
-	if (hClient != INVALID_HANDLE_VALUE) {
-		CloseHandle(hClient);
+	if (thread_.joinable()) {
+		thread_.join();
 	}
 #else
 	// Open the other end of the pipe to jerk the first end loose.

@@ -51,141 +51,149 @@ static std::atomic<bool> g_running{false};
 
 // Windows console control handler for graceful shutdown
 static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrl_type) {
-    switch (ctrl_type) {
-    case CTRL_C_EVENT:
-    case CTRL_BREAK_EVENT:
-    case CTRL_CLOSE_EVENT:
-    case CTRL_SHUTDOWN_EVENT:
-        log::Info("Termination signal received, shutting down gracefully");
-        g_running = false;
-        if (g_shutdown_event) {
-            SetEvent(g_shutdown_event);
-        }
-        if (g_state_machine) {
-            g_state_machine->GetEventLoop().Stop();
-        }
-        return TRUE;
-    default:
-        return FALSE;
+  switch (ctrl_type) {
+  case CTRL_C_EVENT:
+  case CTRL_BREAK_EVENT:
+  case CTRL_CLOSE_EVENT:
+  case CTRL_SHUTDOWN_EVENT:
+    log::Info("Termination signal received, shutting down gracefully");
+    g_running = false;
+    if (g_shutdown_event) {
+      SetEvent(g_shutdown_event);
     }
+    if (g_state_machine) {
+      g_state_machine->GetEventLoop().Stop();
+    }
+    return TRUE;
+  default:
+    return FALSE;
+  }
 }
 
 error::Error StateMachine::RegisterSignalHandlers() {
-    // Store pointer for handlers
-    g_state_machine = this;
+  // Store pointer for handlers
+  g_state_machine = this;
 
-    // Register Windows console control handler for termination signals
-    if (!SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE)) {
-        return error::Error(
-            make_error_condition(errc::permission_denied),
-            "Failed to register Windows console control handler");
-    }
+  // Register Windows console control handler for termination signals
+  if (!SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE)) {
+    return error::Error(
+        make_error_condition(errc::permission_denied),
+        "Failed to register Windows console control handler");
+  }
 
-    // Create named events for IPC
-    // Using manual-reset events so we can handle them properly
-    g_check_update_event = CreateEventA(NULL, TRUE, FALSE, MENDER_CHECK_UPDATE_EVENT);
-    if (g_check_update_event == NULL) {
-        return error::Error(
-            make_error_condition(errc::permission_denied),
-            "Failed to create check update event: " + std::to_string(GetLastError()));
-    }
+  // Create named events for IPC
+  // Using manual-reset events so we can handle them properly
+  g_check_update_event = CreateEventA(NULL, TRUE, FALSE, MENDER_CHECK_UPDATE_EVENT);
+  if (g_check_update_event == NULL) {
+    return error::Error(
+        make_error_condition(errc::permission_denied),
+        "Failed to create check update event: " + std::to_string(GetLastError()));
+  }
 
-    g_send_inventory_event = CreateEventA(NULL, TRUE, FALSE, MENDER_SEND_INVENTORY_EVENT);
-    if (g_send_inventory_event == NULL) {
-        CloseHandle(g_check_update_event);
-        g_check_update_event = NULL;
-        return error::Error(
-            make_error_condition(errc::permission_denied),
-            "Failed to create send inventory event: " + std::to_string(GetLastError()));
-    }
+  g_send_inventory_event = CreateEventA(NULL, TRUE, FALSE, MENDER_SEND_INVENTORY_EVENT);
+  if (g_send_inventory_event == NULL) {
+    CloseHandle(g_check_update_event);
+    g_check_update_event = NULL;
+    return error::Error(
+        make_error_condition(errc::permission_denied),
+        "Failed to create send inventory event: " + std::to_string(GetLastError()));
+  }
 
-    // Internal shutdown event (not named, just for thread coordination)
-    g_shutdown_event = CreateEventA(NULL, TRUE, FALSE, NULL);
-    if (g_shutdown_event == NULL) {
-        CloseHandle(g_check_update_event);
-        CloseHandle(g_send_inventory_event);
-        g_check_update_event = NULL;
-        g_send_inventory_event = NULL;
-        return error::Error(
-            make_error_condition(errc::permission_denied),
+  // Internal shutdown event (not named, just for thread coordination)
+  g_shutdown_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+  if (g_shutdown_event == NULL) {
+    CloseHandle(g_check_update_event);
+    CloseHandle(g_send_inventory_event);
+    g_check_update_event = NULL;
+    g_send_inventory_event = NULL;
+    return error::Error(
+        make_error_condition(errc::permission_denied),
             "Failed to create shutdown event: " + std::to_string(GetLastError()));
+  }
+
+  // Start the background thread to wait for events
+  g_running = true;
+  g_event_thread = std::thread([this]() {
+    HANDLE events[] = {g_check_update_event, g_send_inventory_event, g_shutdown_event};
+    const int num_events = 3;
+
+    while (g_running) {
+      DWORD result = WaitForMultipleObjects(num_events, events, FALSE, INFINITE);
+
+      if (!g_running) {
+        break;
+      }
+
+      switch (result) {
+      case WAIT_OBJECT_0: // Check update event
+        log::Info("Check update event received, triggering deployments check");
+        ResetEvent(g_check_update_event);
+        // Post onto the event loop thread to avoid cross-thread access
+        // to the state machine event queue.
+        this->event_loop_.Post([this]() {
+          this->runner_.PostEvent(StateEvent::DeploymentPollingTriggered);
+        });
+        break;
+
+      case WAIT_OBJECT_0 + 1: // Send inventory event
+        log::Info("Send inventory event received, triggering inventory update");
+        ResetEvent(g_send_inventory_event);
+        // Post onto the event loop thread to avoid cross-thread access
+        // to the state machine event queue.
+        this->event_loop_.Post([this]() {
+          this->runner_.PostEvent(StateEvent::InventoryPollingTriggered);
+        });
+        break;
+
+      case WAIT_OBJECT_0 + 2: // Shutdown event
+        log::Debug("Shutdown event received in event wait thread");
+        return;
+
+      case WAIT_FAILED:
+        log::Error("WaitForMultipleObjects failed: " + std::to_string(GetLastError()));
+        return;
+
+      default:
+        break;
+      }
     }
+  });
 
-    // Start the background thread to wait for events
-    g_running = true;
-    g_event_thread = std::thread([this]() {
-        HANDLE events[] = {g_check_update_event, g_send_inventory_event, g_shutdown_event};
-        const int num_events = 3;
-
-        while (g_running) {
-            DWORD result = WaitForMultipleObjects(num_events, events, FALSE, INFINITE);
-
-            if (!g_running) {
-                break;
-            }
-
-            switch (result) {
-            case WAIT_OBJECT_0: // Check update event
-                log::Info("Check update event received, triggering deployments check");
-                ResetEvent(g_check_update_event);
-                this->runner_.PostEvent(StateEvent::DeploymentPollingTriggered);
-                break;
-
-            case WAIT_OBJECT_0 + 1: // Send inventory event
-                log::Info("Send inventory event received, triggering inventory update");
-                ResetEvent(g_send_inventory_event);
-                this->runner_.PostEvent(StateEvent::InventoryPollingTriggered);
-                break;
-
-            case WAIT_OBJECT_0 + 2: // Shutdown event
-                log::Debug("Shutdown event received in event wait thread");
-                return;
-
-            case WAIT_FAILED:
-                log::Error("WaitForMultipleObjects failed: " + std::to_string(GetLastError()));
-                return;
-
-            default:
-                break;
-            }
-        }
-    });
-
-    log::Info("Windows IPC events registered for check-update and send-inventory commands");
-    return error::NoError;
+  log::Info("Windows IPC events registered for check-update and send-inventory commands");
+  return error::NoError;
 }
 
 // Cleanup function to be called during shutdown
 void CleanupSignalHandlers() {
-    // Signal thread to stop
-    g_running = false;
-    if (g_shutdown_event) {
-        SetEvent(g_shutdown_event);
-    }
+  // Signal thread to stop
+  g_running = false;
+  if (g_shutdown_event) {
+    SetEvent(g_shutdown_event);
+  }
 
-    // Wait for event thread to finish
-    if (g_event_thread.joinable()) {
-        g_event_thread.join();
-    }
+  // Wait for event thread to finish
+  if (g_event_thread.joinable()) {
+    g_event_thread.join();
+  }
 
-    // Close event handles
-    if (g_check_update_event) {
-        CloseHandle(g_check_update_event);
-        g_check_update_event = NULL;
-    }
-    if (g_send_inventory_event) {
-        CloseHandle(g_send_inventory_event);
-        g_send_inventory_event = NULL;
-    }
-    if (g_shutdown_event) {
-        CloseHandle(g_shutdown_event);
-        g_shutdown_event = NULL;
-    }
+  // Close event handles
+  if (g_check_update_event) {
+    CloseHandle(g_check_update_event);
+    g_check_update_event = NULL;
+  }
+  if (g_send_inventory_event) {
+    CloseHandle(g_send_inventory_event);
+    g_send_inventory_event = NULL;
+  }
+  if (g_shutdown_event) {
+    CloseHandle(g_shutdown_event);
+    g_shutdown_event = NULL;
+  }
 
-    // Clear state machine pointer
-    g_state_machine = nullptr;
+  // Clear state machine pointer
+  g_state_machine = nullptr;
 
-    log::Debug("Windows signal handlers cleaned up");
+  log::Debug("Windows signal handlers cleaned up");
 }
 
 } // namespace daemon

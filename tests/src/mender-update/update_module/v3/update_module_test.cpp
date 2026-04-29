@@ -168,6 +168,28 @@ public:
 	string GetUpdateModuleWorkDir() {
 		return path::Join(temp_dir_.Path(), "work");
 	}
+
+	error::Error SimulatePayloadEofMismatch(
+		update_module::UpdateModule &um,
+		mender::artifact::Payload &payload,
+		const string &payload_name,
+		int64_t expected_size,
+		int64_t written_size) {
+		events::EventLoop loop;
+		error::Error captured_err;
+
+		um.download_ = make_unique<update_module::UpdateModule::DownloadData>(loop, payload);
+		um.download_->download_finished_handler_ =
+			[&captured_err](error::Error err) { captured_err = err; };
+		um.download_->current_payload_name_ = payload_name;
+		um.download_->current_payload_size_ = expected_size;
+		um.download_->written_ = written_size;
+		um.download_->downloading_to_files_ = true;
+
+		um.PayloadReadHandler(io::ExpectedSize {size_t {0}});
+
+		return captured_err;
+	}
 };
 
 class UpdateModuleTestWithDefaultArtifact {
@@ -856,6 +878,18 @@ exit 0
 	auto err = art.update_module->Download(*art.payload);
 	EXPECT_NE(err, error::NoError) << err.String();
 	EXPECT_EQ(err.code, make_error_condition(errc::is_a_directory)) << err.String();
+}
+
+TEST_F(UpdateModuleTests, DownloadDetectsTruncatedPayloadAtEof) {
+	UpdateModuleTestWithDefaultArtifact art(*this);
+
+	auto captured_err = SimulatePayloadEofMismatch(
+		*art.update_module, *art.payload, "rootfs", 32768, 16384);
+
+	EXPECT_NE(captured_err, error::NoError);
+	EXPECT_EQ(captured_err.code, make_error_condition(errc::io_error));
+	EXPECT_THAT(captured_err.String(), testing::HasSubstr("Payload size mismatch while downloading"));
+	EXPECT_THAT(captured_err.String(), testing::HasSubstr("wrote 16384 bytes, expected 32768"));
 }
 
 TEST_F(UpdateModuleTests, DownloadProcessTimesOut) {
