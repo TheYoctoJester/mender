@@ -1,0 +1,131 @@
+name: Windows build + installer
+
+on:
+  push:
+    branches: [windows-port]
+  pull_request:
+    branches: [windows-port]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build mender-update.exe and NSIS installer
+    runs-on: windows-2022
+    env:
+      # Cache compiled vcpkg packages in the GitHub Actions cache. The first run
+      # compiles boost/openssl/libarchive from source (~30-60 min); later runs
+      # restore from cache and finish in minutes.
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout (with submodules + tags)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Enable vcpkg GitHub Actions binary cache
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Compute version
+        id: version
+        run: |
+          $v = git describe --tags --dirty --exact-match 2>$null
+          if (-not $v) { $v = "0.0.0-$(git rev-parse --short HEAD)" }
+          $v = $v -replace '[^A-Za-z0-9._-]', '-'
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $v"
+
+      - name: Configure (CMake + vcpkg, MSVC x64)
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --target mender-update --parallel
+
+      - name: Download NSSM (bundled into the installer)
+        run: |
+          $urls = @(
+            "https://nssm.cc/release/nssm-2.24.zip",
+            "https://github.com/kirillkovalenko/nssm/releases/download/v2.24/nssm-2.24.zip"
+          )
+          $ok = $false
+          foreach ($u in $urls) {
+            try { Invoke-WebRequest -Uri $u -OutFile nssm.zip -UseBasicParsing; $ok = $true; break }
+            catch { Write-Warning "NSSM download failed from $u : $_" }
+          }
+          if (-not $ok) { throw "Could not download NSSM from any source" }
+          Expand-Archive nssm.zip -DestinationPath nssm -Force
+          $nssm = Get-ChildItem -Recurse -Path nssm -Filter nssm.exe |
+                  Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
+          if (-not $nssm) { throw "nssm.exe (win64) not found in archive" }
+          "nssm_exe=$($nssm.FullName)" >> $env:GITHUB_OUTPUT
+        id: nssm
+
+      - name: Stage installer payload
+        run: |
+          ./support/windows/installer/Stage-Payload.ps1 `
+            -NssmExe "${{ steps.nssm.outputs.nssm_exe }}" `
+            -OutDir "$PWD/payload"
+
+      - name: Build NSIS installer
+        run: |
+          choco install nsis -y --no-progress
+          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          & $makensis /DVERSION=${{ steps.version.outputs.version }} `
+                      /DPAYLOAD=$PWD\payload `
+                      support\windows\installer\mender-setup.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+          Get-ChildItem mender-setup-*.exe
+
+      - name: Smoke test
+        run: |
+          # 1. The freshly built exe must launch (catches missing bundled DLLs).
+          $out = & payload\program\mender-update.exe --version 2>&1
+          $code = $LASTEXITCODE
+          Write-Host "mender-update --version -> exit $code : $out"
+          if ($code -eq -1073741515) { throw "mender-update.exe failed to start: missing DLL (0xC0000135)" }
+
+          # 2. Silent install round-trip (runner is elevated).
+          $installer = (Get-ChildItem mender-setup-*.exe | Select-Object -First 1).FullName
+          Write-Host "Running silent install: $installer /S"
+          Start-Process -Wait -FilePath $installer -ArgumentList "/S"
+          $installed = "$env:ProgramFiles\Mender\mender-update.exe"
+          if (-not (Test-Path $installed)) { throw "Installer did not place $installed" }
+          Write-Host "Installed binary present: $installed"
+
+          $svc = Get-Service MenderClient -ErrorAction SilentlyContinue
+          if ($svc) { Write-Host "Service registered: $($svc.Name) [$($svc.Status)]" }
+          else { Write-Warning "MenderClient service not registered (binary install still OK)" }
+
+          # 3. Clean up.
+          $uninst = "$env:ProgramFiles\Mender\Uninstall.exe"
+          if (Test-Path $uninst) { Start-Process -Wait -FilePath $uninst -ArgumentList "/S" }
+
+      - name: Upload installer artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mender-windows-installer-${{ steps.version.outputs.version }}
+          path: |
+            mender-setup-*.exe
+            payload/program/mender-update.exe
+          if-no-files-found: warn
