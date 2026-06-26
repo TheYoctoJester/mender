@@ -23,8 +23,13 @@
 
 #ifdef _WIN32
 #include <BaseTsd.h>
+#include <locale>
+#include <sstream>
 typedef SSIZE_T ssize_t;
 #define strcasecmp _stricmp
+// MSVC has no strptime/timegm; timegm maps to _mkgmtime and strptime is
+// replaced by std::get_time at the call site (see GetRemainingTime).
+#define timegm _mkgmtime
 #endif
 
 #include <common/common.hpp>
@@ -242,9 +247,19 @@ expected::Expected<chrono::seconds> GetRemainingTime(const string &date) {
 	}
 
 	struct tm tm_struct = {};
+#ifdef _WIN32
+	// MSVC has no strptime; std::get_time gives the same parse portably.
+	std::istringstream date_stream(date);
+	date_stream.imbue(std::locale::classic());
+	date_stream >> std::get_time(&tm_struct, "%a, %d %b %Y %H:%M:%S GMT");
+	if (date_stream.fail()) {
+		return expected::unexpected(MakeError(InvalidDateFormatError, "Invalid date format"));
+	}
+#else
 	if (strptime(date.c_str(), "%a, %d %b %Y %H:%M:%S GMT", &tm_struct) == nullptr) {
 		return expected::unexpected(MakeError(InvalidDateFormatError, "Invalid date format"));
 	}
+#endif
 
 	time_t expiry_time = timegm(&tm_struct);
 	time_t now = time(nullptr);
