@@ -16,6 +16,11 @@ ManifestDPIAware true
 !ifndef PAYLOAD
   !define PAYLOAD "payload"
 !endif
+; OUTFILE may be an absolute path; OutFile is otherwise resolved relative to
+; this .nsi file's directory, which is rarely what the caller wants.
+!ifndef OUTFILE
+  !define OUTFILE "mender-setup-${VERSION}.exe"
+!endif
 
 !define PRODUCT       "Mender"
 !define PUBLISHER     "Northern.tech AS"
@@ -23,7 +28,7 @@ ManifestDPIAware true
 !define ARP_KEY       "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT}"
 
 Name "${PRODUCT} ${VERSION}"
-OutFile "mender-setup-${VERSION}.exe"
+OutFile "${OUTFILE}"
 InstallDir "$PROGRAMFILES64\Mender"
 RequestExecutionLevel admin
 ShowInstDetails show

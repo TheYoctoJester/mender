@@ -87,14 +87,19 @@ jobs:
             -OutDir "$PWD/payload"
 
       - name: Build NSIS installer
+        id: installer
         run: |
           choco install nsis -y --no-progress
           $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
-          & $makensis /DVERSION=${{ steps.version.outputs.version }} `
-                      /DPAYLOAD=$PWD\payload `
+          $out = Join-Path $PWD "mender-setup-${{ steps.version.outputs.version }}.exe"
+          & $makensis "/DVERSION=${{ steps.version.outputs.version }}" `
+                      "/DPAYLOAD=$PWD\payload" `
+                      "/DOUTFILE=$out" `
                       support\windows\installer\mender-setup.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
-          Get-ChildItem mender-setup-*.exe
+          if (-not (Test-Path $out)) { throw "installer not produced at $out" }
+          Write-Host "Installer: $out"
+          "installer=$out" >> $env:GITHUB_OUTPUT
 
       - name: Smoke test
         run: |
@@ -105,7 +110,7 @@ jobs:
           if ($code -eq -1073741515) { throw "mender-update.exe failed to start: missing DLL (0xC0000135)" }
 
           # 2. Silent install round-trip (runner is elevated).
-          $installer = (Get-ChildItem mender-setup-*.exe | Select-Object -First 1).FullName
+          $installer = "${{ steps.installer.outputs.installer }}"
           Write-Host "Running silent install: $installer /S"
           Start-Process -Wait -FilePath $installer -ArgumentList "/S"
           $installed = "$env:ProgramFiles\Mender\mender-update.exe"
