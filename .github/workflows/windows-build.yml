@@ -14,15 +14,18 @@ concurrency:
   group: windows-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Real vcpkg binary cache: the "files" provider writes compiled packages into
+  # a directory we persist with actions/cache. On a cache hit the boost/openssl/
+  # libarchive builds (~18 min) are skipped. (The old "x-gha" backend used here
+  # before was the deprecated Actions cache service and silently did nothing.)
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\vcpkg_cache,readwrite"
+
 jobs:
   build:
     name: Build mender-update.exe and NSIS installer
     runs-on: windows-2022
-    env:
-      # Cache compiled vcpkg packages in the GitHub Actions cache. The first run
-      # compiles boost/openssl/libarchive from source (~30-60 min); later runs
-      # restore from cache and finish in minutes.
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -35,17 +38,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Enable vcpkg GitHub Actions binary cache
-        uses: actions/github-script@v9
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: vcpkg_cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Ensure vcpkg cache dir exists
+        run: New-Item -ItemType Directory -Force -Path vcpkg_cache | Out-Null
 
       - name: Compute version
         id: version
         run: |
-          $v = git describe --tags --dirty --exact-match 2>$null
+          $v = git describe --tags --exact-match 2>$null
           if (-not $v) { $v = "0.0.0-$(git rev-parse --short HEAD)" }
           $v = $v -replace '[^A-Za-z0-9._-]', '-'
           "version=$v" >> $env:GITHUB_OUTPUT
@@ -62,6 +68,7 @@ jobs:
         run: cmake --build build --config Release --target mender-update --parallel
 
       - name: Download NSSM (bundled into the installer)
+        id: nssm
         run: |
           $urls = @(
             "https://nssm.cc/release/nssm-2.24.zip",
@@ -78,7 +85,6 @@ jobs:
                   Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
           if (-not $nssm) { throw "nssm.exe (win64) not found in archive" }
           "nssm_exe=$($nssm.FullName)" >> $env:GITHUB_OUTPUT
-        id: nssm
 
       - name: Stage installer payload
         run: |
@@ -103,27 +109,60 @@ jobs:
 
       - name: Smoke test
         run: |
-          # 1. The freshly built exe must launch (catches missing bundled DLLs).
-          $out = & payload\program\mender-update.exe --version 2>&1
+          $ErrorActionPreference = "Stop"
+
+          # Run a process with a hard timeout so a hung installer can't wedge the job.
+          function Invoke-Bounded([string]$File, [string[]]$Args, [int]$TimeoutSec) {
+            $p = Start-Process -FilePath $File -ArgumentList $Args -PassThru
+            if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+              try { $p.Kill() } catch {}
+              throw "$File did not exit within $TimeoutSec s"
+            }
+            return $p.ExitCode
+          }
+
+          $expected = "${{ steps.version.outputs.version }}"
+
+          # 1. The freshly built exe must launch AND report the expected version.
+          $out = (& payload\program\mender-update.exe --version 2>&1 | Out-String).Trim()
           $code = $LASTEXITCODE
           Write-Host "mender-update --version -> exit $code : $out"
-          if ($code -eq -1073741515) { throw "mender-update.exe failed to start: missing DLL (0xC0000135)" }
+          if ($code -ne 0) { throw "mender-update --version exited $code (expected 0)" }
+          if ($out -notmatch [regex]::Escape($expected)) {
+            throw "version output '$out' does not contain expected version '$expected'"
+          }
 
-          # 2. Silent install round-trip (runner is elevated).
+          # 2. Silent install must place the binary AND leave a Running service.
           $installer = "${{ steps.installer.outputs.installer }}"
-          Write-Host "Running silent install: $installer /S"
-          Start-Process -Wait -FilePath $installer -ArgumentList "/S"
+          if (-not (Test-Path $installer)) { throw "installer not found: $installer" }
+          Write-Host "Silent install: $installer /S"
+          $rc = Invoke-Bounded $installer @("/S") 180
+          Write-Host "installer exit: $rc"
+
           $installed = "$env:ProgramFiles\Mender\mender-update.exe"
-          if (-not (Test-Path $installed)) { throw "Installer did not place $installed" }
+          if (-not (Test-Path $installed)) { throw "installer did not place $installed" }
           Write-Host "Installed binary present: $installed"
 
+          Start-Sleep -Seconds 5
           $svc = Get-Service MenderClient -ErrorAction SilentlyContinue
-          if ($svc) { Write-Host "Service registered: $($svc.Name) [$($svc.Status)]" }
-          else { Write-Warning "MenderClient service not registered (binary install still OK)" }
+          if (-not $svc) { throw "MenderClient service was not registered" }
+          if ($svc.Status -ne 'Running') {
+            $log = "$env:ProgramData\Mender\logs\mender-service.log"
+            if (Test-Path $log) { Write-Host "--- service log ---"; Get-Content $log -Tail 30 }
+            throw "MenderClient service is '$($svc.Status)', expected 'Running'"
+          }
+          Write-Host "Service registered and running: $($svc.Name)"
 
-          # 3. Clean up.
+          # 3. Uninstall must remove the service and the binary.
           $uninst = "$env:ProgramFiles\Mender\Uninstall.exe"
-          if (Test-Path $uninst) { Start-Process -Wait -FilePath $uninst -ArgumentList "/S" }
+          if (Test-Path $uninst) {
+            $urc = Invoke-Bounded $uninst @("/S") 180
+            Write-Host "uninstaller exit: $urc"
+            Start-Sleep -Seconds 3
+            if (Get-Service MenderClient -ErrorAction SilentlyContinue) {
+              Write-Warning "MenderClient service still present after uninstall"
+            }
+          }
 
       - name: Upload installer artifact
         if: always()
@@ -134,3 +173,62 @@ jobs:
             mender-setup-*.exe
             payload/program/mender-update.exe
           if-no-files-found: warn
+
+  # Honest test signal. Non-blocking (the Windows port is experimental and not
+  # all of the suite is expected to pass yet), but it actually builds and runs
+  # the unit tests covering the recent Windows-specific changes instead of
+  # pretending a "--version" call is a test.
+  test:
+    name: Unit tests (non-blocking)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    continue-on-error: true
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout (with submodules + tags)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Ensure vcpkg cache dir exists
+        run: New-Item -ItemType Directory -Force -Path vcpkg_cache | Out-Null
+
+      - name: Configure (tests enabled)
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DBUILD_TESTS=ON
+
+      - name: Build + run targeted unit tests
+        run: |
+          $ErrorActionPreference = "Continue"
+          $failed = $false
+
+          # Targets covering the recent changes: StringToLongLong (MSVC fix),
+          # the HTTP Retry-After date parser, and the truncated-payload download fix.
+          $targets = @("common_test", "http_date_test", "update_module_test")
+          foreach ($t in $targets) {
+            Write-Host "::group::build $t"
+            cmake --build build --config Release --target $t
+            if ($LASTEXITCODE -ne 0) { Write-Warning "build of $t failed ($LASTEXITCODE)"; $failed = $true }
+            Write-Host "::endgroup::"
+          }
+
+          ctest --test-dir build -C Release --output-on-failure --no-tests=ignore `
+            -R "CommonTests|HttpRetryAfterTest|DownloadDetectsTruncatedPayloadAtEof"
+          if ($LASTEXITCODE -ne 0) { Write-Warning "ctest reported failures ($LASTEXITCODE)"; $failed = $true }
+
+          if ($failed) { exit 1 }
