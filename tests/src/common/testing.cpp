@@ -44,9 +44,11 @@ TemporaryDirectory::TemporaryDirectory() {
 	fs::path path = fs::temp_directory_path();
 	path.append("mender-test-" + std::to_string(std::random_device()()));
 	if (!fs::create_directories(path)) {
-		throw runtime_error("Failed to create the temporary directory: " + string(path));
+		// path.string() rather than string(path): on MSVC fs::path's native type
+		// is wchar_t, so there is no implicit conversion to std::string.
+		throw runtime_error("Failed to create the temporary directory: " + path.string());
 	}
-	path_ = path;
+	path_ = path.string();
 }
 
 TemporaryDirectory::~TemporaryDirectory() {

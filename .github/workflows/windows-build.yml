@@ -51,9 +51,11 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          $v = git describe --tags --exact-match 2>$null
-          if (-not $v) { $v = "0.0.0-$(git rev-parse --short HEAD)" }
-          $v = $v -replace '[^A-Za-z0-9._-]', '-'
+          # Mirror the version logic in src/CMakeLists.txt exactly, so the
+          # installer filename matches what the binary reports via --version.
+          $v = git describe --tags --dirty --exact-match 2>$null
+          if (-not $v) { $v = git rev-parse --short HEAD }
+          $v = "$v".Trim() -replace '[^A-Za-z0-9._-]', '-'
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "Version: $v"
 
