@@ -14,6 +14,11 @@ target_link_libraries(common_test PUBLIC common main_test gmock)
 gtest_discover_tests(common_test NO_PRETTY_VALUES)
 add_dependencies(tests common_test)
 
+add_executable(http_date_test EXCLUDE_FROM_ALL http_date_test.cpp)
+target_link_libraries(http_date_test PUBLIC common_http main_test gmock)
+gtest_discover_tests(http_date_test NO_PRETTY_VALUES)
+add_dependencies(tests http_date_test)
+
 add_library(common_testing EXCLUDE_FROM_ALL STATIC testing.cpp)
 target_compile_options(common_testing PRIVATE ${PLATFORM_SPECIFIC_COMPILE_OPTIONS})
 target_link_libraries(common_testing PUBLIC
