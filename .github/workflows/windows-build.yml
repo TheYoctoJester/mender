@@ -81,13 +81,20 @@ jobs:
       - name: Install NSSM (bundled into the installer)
         id: nssm
         run: |
-          choco install nssm -y --no-progress
-          # Bundle the real binary, not choco's PATH shim.
+          # NSSM is often already on the runner image, in which case choco exits
+          # non-zero ("0/1 installed"); that is fine, we only need the binary.
+          choco install nssm -y --no-progress | Out-Host
+          # Bundle the real win64 binary, not choco's PATH shim.
           $nssm = Get-ChildItem "C:\ProgramData\chocolatey\lib" -Recurse -Filter nssm.exe -ErrorAction SilentlyContinue |
-                  Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
-          if (-not $nssm) { throw "nssm.exe (win64) not found after choco install" }
+                  Where-Object { $_.FullName -match '\\win64\\' } | Select-Object -First 1
+          if (-not $nssm) {
+            $nssm = Get-ChildItem "C:\ProgramData\chocolatey\lib" -Recurse -Filter nssm.exe -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+          }
+          if (-not $nssm) { throw "nssm.exe not found after choco install" }
           Write-Host "NSSM: $($nssm.FullName)"
           "nssm_exe=$($nssm.FullName)" >> $env:GITHUB_OUTPUT
+          exit 0
 
       - name: Stage installer payload
         run: |
@@ -230,8 +237,7 @@ jobs:
           $ErrorActionPreference = "Continue"
           $failed = $false
 
-          # vcpkg builds dynamic libs; the test exes (and gtest_discover_tests,
-          # which runs them at build time) need the vcpkg DLLs on PATH.
+          # vcpkg builds dynamic libs; the test exes need the vcpkg DLLs on PATH.
           $env:PATH = "$PWD\build\vcpkg_installed\x64-windows\bin;$env:PATH"
 
           $targets = @("common_test", "http_date_test")
@@ -242,8 +248,16 @@ jobs:
             Write-Host "::endgroup::"
           }
 
-          ctest --test-dir build -C Release --output-on-failure --no-tests=error `
-            -R "CommonTests|HttpRetryAfterTest"
-          if ($LASTEXITCODE -ne 0) { Write-Warning "ctest reported failures ($LASTEXITCODE)"; $failed = $true }
+          # Run the gtest executables directly rather than via ctest: gtest's
+          # build-time test discovery is unreliable on Windows, and the exe's
+          # own exit code already reflects pass/fail.
+          foreach ($t in $targets) {
+            $exe = Get-ChildItem build -Recurse -Filter "$t.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $exe) { Write-Warning "$t.exe not found (build failed?)"; $failed = $true; continue }
+            Write-Host "::group::run $t"
+            & $exe.FullName
+            if ($LASTEXITCODE -ne 0) { Write-Warning "$t reported test failures ($LASTEXITCODE)"; $failed = $true }
+            Write-Host "::endgroup::"
+          }
 
           if ($failed) { exit 1 }
