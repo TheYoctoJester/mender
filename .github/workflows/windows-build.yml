@@ -17,8 +17,7 @@ concurrency:
 env:
   # Real vcpkg binary cache: the "files" provider writes compiled packages into
   # a directory we persist with actions/cache. On a cache hit the boost/openssl/
-  # libarchive builds (~18 min) are skipped. (The old "x-gha" backend used here
-  # before was the deprecated Actions cache service and silently did nothing.)
+  # libarchive builds (~18 min) are skipped.
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\vcpkg_cache,readwrite"
 
 jobs:
@@ -38,8 +37,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # restore/save are split (rather than actions/cache@v4) so the expensive
+      # vcpkg output is saved even when a later step fails - otherwise a failing
+      # iteration streak never populates the cache.
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -66,26 +68,25 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DBUILD_TESTS=OFF
 
+      - name: Save vcpkg binary cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg_cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
       - name: Build
         run: cmake --build build --config Release --target mender-update --parallel
 
-      - name: Download NSSM (bundled into the installer)
+      - name: Install NSSM (bundled into the installer)
         id: nssm
         run: |
-          $urls = @(
-            "https://nssm.cc/release/nssm-2.24.zip",
-            "https://github.com/kirillkovalenko/nssm/releases/download/v2.24/nssm-2.24.zip"
-          )
-          $ok = $false
-          foreach ($u in $urls) {
-            try { Invoke-WebRequest -Uri $u -OutFile nssm.zip -UseBasicParsing; $ok = $true; break }
-            catch { Write-Warning "NSSM download failed from $u : $_" }
-          }
-          if (-not $ok) { throw "Could not download NSSM from any source" }
-          Expand-Archive nssm.zip -DestinationPath nssm -Force
-          $nssm = Get-ChildItem -Recurse -Path nssm -Filter nssm.exe |
+          choco install nssm -y --no-progress
+          # Bundle the real binary, not choco's PATH shim.
+          $nssm = Get-ChildItem "C:\ProgramData\chocolatey\lib" -Recurse -Filter nssm.exe -ErrorAction SilentlyContinue |
                   Where-Object { $_.FullName -match 'win64' } | Select-Object -First 1
-          if (-not $nssm) { throw "nssm.exe (win64) not found in archive" }
+          if (-not $nssm) { throw "nssm.exe (win64) not found after choco install" }
+          Write-Host "NSSM: $($nssm.FullName)"
           "nssm_exe=$($nssm.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: Stage installer payload
@@ -176,10 +177,13 @@ jobs:
             payload/program/mender-update.exe
           if-no-files-found: warn
 
-  # Honest test signal. Non-blocking (the Windows port is experimental and not
-  # all of the suite is expected to pass yet), but it actually builds and runs
-  # the unit tests covering the recent Windows-specific changes instead of
-  # pretending a "--version" call is a test.
+  # Honest test signal. Non-blocking (the Windows port is experimental), but it
+  # actually builds and runs the portable unit tests covering the recent
+  # changes - StringToLongLong (MSVC fix) and the HTTP Retry-After parser.
+  #
+  # update_module_test is intentionally NOT included: it is written against
+  # POSIX (mkdir(path,mode), chmod, S_IRUSR, mkfifo) and does not compile on
+  # MSVC. Porting it to Windows is tracked separately.
   test:
     name: Unit tests (non-blocking)
     runs-on: windows-2022
@@ -198,7 +202,7 @@ jobs:
           fetch-tags: true
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: vcpkg_cache
           key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
@@ -214,14 +218,23 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DBUILD_TESTS=ON
 
-      - name: Build + run targeted unit tests
+      - name: Save vcpkg binary cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: vcpkg_cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build + run portable unit tests
         run: |
           $ErrorActionPreference = "Continue"
           $failed = $false
 
-          # Targets covering the recent changes: StringToLongLong (MSVC fix),
-          # the HTTP Retry-After date parser, and the truncated-payload download fix.
-          $targets = @("common_test", "http_date_test", "update_module_test")
+          # vcpkg builds dynamic libs; the test exes (and gtest_discover_tests,
+          # which runs them at build time) need the vcpkg DLLs on PATH.
+          $env:PATH = "$PWD\build\vcpkg_installed\x64-windows\bin;$env:PATH"
+
+          $targets = @("common_test", "http_date_test")
           foreach ($t in $targets) {
             Write-Host "::group::build $t"
             cmake --build build --config Release --target $t
@@ -229,8 +242,8 @@ jobs:
             Write-Host "::endgroup::"
           }
 
-          ctest --test-dir build -C Release --output-on-failure --no-tests=ignore `
-            -R "CommonTests|HttpRetryAfterTest|DownloadDetectsTruncatedPayloadAtEof"
+          ctest --test-dir build -C Release --output-on-failure --no-tests=error `
+            -R "CommonTests|HttpRetryAfterTest"
           if ($LASTEXITCODE -ne 0) { Write-Warning "ctest reported failures ($LASTEXITCODE)"; $failed = $true }
 
           if ($failed) { exit 1 }
