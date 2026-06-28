@@ -60,8 +60,10 @@ Section "Mender client" SecMain
 
   ; 3. Register the Windows service (reuse the existing script; nssm bundled, no download)
   DetailPrint "Registering ${SERVICE_NAME} service..."
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$APPDATA\Mender\service\install-service.ps1" -MenderPath "$INSTDIR\mender-update.exe" -NssmPath "$APPDATA\Mender\tools\nssm.exe" -ServiceName "${SERVICE_NAME}"'
-  Pop $0
+  ; ExecWait, not nsExec::ExecToLog: the latter pipes stdout and blocks until
+  ; every process inheriting that pipe closes it - including the mender-update
+  ; daemon the service starts, which never exits and hangs a silent install.
+  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$APPDATA\Mender\service\install-service.ps1" -MenderPath "$INSTDIR\mender-update.exe" -NssmPath "$APPDATA\Mender\tools\nssm.exe" -ServiceName "${SERVICE_NAME}"' $0
   DetailPrint "install-service.ps1 exit code: $0"
   ${If} $0 != 0
     DetailPrint "WARNING: service registration returned $0 (the binary is installed; you can re-run install-service.ps1 manually)."
@@ -84,8 +86,7 @@ Section "Uninstall"
 
   ; Stop + remove the service first
   IfFileExists "$APPDATA\Mender\service\uninstall-service.ps1" 0 +3
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$APPDATA\Mender\service\uninstall-service.ps1" -ServiceName "${SERVICE_NAME}"'
-    Pop $0
+    ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$APPDATA\Mender\service\uninstall-service.ps1" -ServiceName "${SERVICE_NAME}"' $0
 
   ; Remove program files
   Delete "$INSTDIR\Uninstall.exe"
