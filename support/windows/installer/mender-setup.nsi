@@ -35,6 +35,7 @@ ShowInstDetails show
 ShowUnInstDetails show
 
 !include "MUI2.nsh"
+!include "FileFunc.nsh"   ; GetParameters / GetOptions (for /NOSVC)
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -58,15 +59,23 @@ Section "Mender client" SecMain
   CreateDirectory "$APPDATA\Mender\conf"
   CreateDirectory "$APPDATA\Mender\logs"
 
-  ; 3. Register the Windows service (reuse the existing script; nssm bundled, no download)
-  DetailPrint "Registering ${SERVICE_NAME} service..."
-  ; ExecWait, not nsExec::ExecToLog: the latter pipes stdout and blocks until
-  ; every process inheriting that pipe closes it - including the mender-update
-  ; daemon the service starts, which never exits and hangs a silent install.
-  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$APPDATA\Mender\service\install-service.ps1" -MenderPath "$INSTDIR\mender-update.exe" -NssmPath "$APPDATA\Mender\tools\nssm.exe" -ServiceName "${SERVICE_NAME}"' $0
-  DetailPrint "install-service.ps1 exit code: $0"
-  ${If} $0 != 0
-    DetailPrint "WARNING: service registration returned $0 (the binary is installed; you can re-run install-service.ps1 manually)."
+  ; 3. Register the Windows service, unless /NOSVC was passed (e.g. for imaging
+  ;    or CI, where starting a daemon that has no server config yet is undesirable).
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/NOSVC" $R1
+  ${IfNot} ${Errors}
+    DetailPrint "Skipping service registration (/NOSVC). Run install-service.ps1 later to register it."
+  ${Else}
+    DetailPrint "Registering ${SERVICE_NAME} service..."
+    ; ExecWait, not nsExec::ExecToLog: the latter pipes stdout and blocks until
+    ; every process inheriting that pipe closes it - including the mender-update
+    ; daemon the service starts, which never exits and hangs a silent install.
+    ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$APPDATA\Mender\service\install-service.ps1" -MenderPath "$INSTDIR\mender-update.exe" -NssmPath "$APPDATA\Mender\tools\nssm.exe" -ServiceName "${SERVICE_NAME}"' $0
+    DetailPrint "install-service.ps1 exit code: $0"
+    ${If} $0 != 0
+      DetailPrint "WARNING: service registration returned $0 (the binary is installed; you can re-run install-service.ps1 manually)."
+    ${EndIf}
   ${EndIf}
 
   ; 4. Uninstaller + Add/Remove Programs entry
