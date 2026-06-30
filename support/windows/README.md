@@ -23,9 +23,104 @@ windows/
 └── README.md
 ```
 
-## Installation
+## Downloading and Testing the CI Installer
 
-Copy the scripts to the appropriate Mender directories:
+The [`Windows build + installer`](../../.github/workflows/windows-build.yml) GitHub
+Actions workflow builds `mender-update.exe` and packages it into an NSIS
+installer on every push to `windows-port`. This is the easiest way to obtain a
+ready-to-test build without setting up MSVC, vcpkg and the submodules locally.
+
+### Download the artifact
+
+1. Open the repository's **Actions** tab and select a green
+   **Windows build + installer** run (or trigger one manually via **Run
+   workflow**).
+2. Scroll to the **Artifacts** section at the bottom of the run summary.
+3. Download `mender-windows-installer-<version>.zip`.
+
+The zip contains:
+
+| File | Purpose |
+|------|---------|
+| `mender-setup-<version>.exe` | The NSIS installer (what you test below). |
+| `mender-update.exe` | The bare client binary, for quick `--version` checks. |
+
+> **Notes**
+> - Artifacts are only downloadable by **signed-in users with access** to the
+>   repository, and they **expire after 90 days** (GitHub defaults). There is no
+>   anonymous public download link — that would require a GitHub Release.
+> - The installer is **unsigned**, so Windows SmartScreen will show a
+>   "Windows protected your PC" warning. Choose **More info → Run anyway** to
+>   proceed. This is expected for an unsigned CI build.
+
+### What the installer places
+
+Running `mender-setup-<version>.exe` lays the client out in the standard
+locations described under [Mender Installation Layout](#mender-installation-layout):
+
+```
+%ProgramFiles%\Mender\       <- mender-update.exe + runtime DLLs (vcpkg + MSVC)
+%ProgramData%\Mender\        <- identity, inventory, modules\v3, service scripts, tools\nssm.exe
+```
+
+By default it also registers the `MenderClient` Windows service via NSSM.
+
+### Installer switches
+
+| Command | Effect |
+|---------|--------|
+| `mender-setup-<version>.exe` | Interactive install (wizard UI). |
+| `mender-setup-<version>.exe /S` | **Silent** install, no UI. |
+| `mender-setup-<version>.exe /S /NOSVC` | Silent install **without** registering the service. Use this for imaging or test machines that have no server config yet (a service that starts a daemon with no config just sits idle). |
+| `%ProgramFiles%\Mender\Uninstall.exe /S` | Silent uninstall (stops/removes the service and program files; preserves user data). |
+
+Both the installer and uninstaller require **Administrator** privileges (they
+self-elevate when launched interactively).
+
+### Manual test checklist
+
+Run from an **elevated** PowerShell prompt:
+
+```powershell
+# 1. Install without the service (fast, no daemon).
+.\mender-setup-<version>.exe /S /NOSVC
+
+# 2. The binary is in place and reports the expected version.
+& "$env:ProgramFiles\Mender\mender-update.exe" --version
+
+# 3. The data tree was laid down.
+Get-ChildItem "$env:ProgramData\Mender"
+
+# 4. (Optional) Register and start the service explicitly.
+& "$env:ProgramData\Mender\service\install-service.ps1" `
+    -MenderPath "$env:ProgramFiles\Mender\mender-update.exe" `
+    -NssmPath   "$env:ProgramData\Mender\tools\nssm.exe"
+Get-Service MenderClient
+
+# 5. Clean up.
+.\mender-setup-<version>.exe /S    # or: & "$env:ProgramFiles\Mender\Uninstall.exe" /S
+```
+
+> Connecting to a Mender server requires a `mender.conf` and credentials and is
+> **out of scope** for this smoke test — the steps above verify only that the
+> client installs, launches and (optionally) registers as a service.
+
+### What CI already checks for you
+
+The workflow's **Smoke test** step gates every build on:
+
+- `mender-update.exe --version` exiting `0` and reporting the expected version;
+- the installer actually bundling `mender-update.exe`, `install-service.ps1` and
+  `nssm.exe` (verified by listing its contents with `7z`).
+
+So a downloaded artifact from a green run is already known to launch and to be
+well-formed; the manual checklist above confirms the install/uninstall
+round-trip on your own machine.
+
+## Installation (manual / from source)
+
+If you build locally instead of using the installer, copy the scripts to the
+appropriate Mender directories:
 
 ```powershell
 # Create directories
