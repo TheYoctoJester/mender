@@ -24,13 +24,18 @@
 
 .PARAMETER OutDir
     Staging output directory. Defaults to <RepoRoot>\payload.
+
+.PARAMETER Triplet
+    vcpkg target triplet whose bin directory carries the runtime DLLs.
+    Defaults to x64-windows.
 #>
 [CmdletBinding()]
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path,
     [string]$BuildDir = "",
     [string]$NssmExe  = "",
-    [string]$OutDir   = ""
+    [string]$OutDir   = "",
+    [string]$Triplet  = "x64-windows"
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,8 +68,8 @@ if (-not (Test-Path $exe)) {
 Copy-Item $exe (Join-Path $programDir "mender-update.exe") -Force
 Write-Host "Staged binary: $exe"
 
-# --- 2. Runtime DLLs (vcpkg x64-windows) -------------------------------------
-$vcpkgBin = Join-Path $BuildDir "vcpkg_installed\x64-windows\bin"
+# --- 2. Runtime DLLs (vcpkg) ---------------------------------------------------
+$vcpkgBin = Join-Path $BuildDir "vcpkg_installed\$Triplet\bin"
 if (Test-Path $vcpkgBin) {
     $dlls = Get-ChildItem -Path $vcpkgBin -Filter *.dll -ErrorAction SilentlyContinue
     foreach ($d in $dlls) { Copy-Item $d.FullName $programDir -Force }

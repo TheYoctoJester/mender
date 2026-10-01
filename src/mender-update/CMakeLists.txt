@@ -113,7 +113,7 @@ target_link_libraries(mender_update_cli PUBLIC
 add_executable(mender-update main.cpp)
 if(WIN32)
   # Include OpenSSL applink for proper stdio handling on Windows
-  target_sources(mender-update PRIVATE ${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/include/openssl/applink.c)
+  target_sources(mender-update PRIVATE ${CMAKE_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/include/openssl/applink.c)
 endif()
 target_link_libraries(mender-update PRIVATE
   common_log
