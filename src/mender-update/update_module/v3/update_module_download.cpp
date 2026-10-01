@@ -223,11 +223,17 @@ void UpdateModule::StreamNextOpenHandler(io::ExpectedAsyncWriterPtr writer) {
 	}
 
 	string stream_next_string;
+#ifdef _WIN32
+	// The payload stream is a named pipe with an unpredictable name; announce
+	// the actual pipe path instead of the POSIX-style streams/<name> location.
+	const string announce_path = download_->current_stream_pipe_path_;
+#else
+	const string announce_path = path::Join("streams", download_->current_payload_name_);
+#endif
 	if (download_->downloading_with_sizes_) {
-		stream_next_string = path::Join("streams", download_->current_payload_name_) + " "
-							 + to_string(download_->current_payload_size_);
+		stream_next_string = announce_path + " " + to_string(download_->current_payload_size_);
 	} else {
-		stream_next_string = path::Join("streams", download_->current_payload_name_);
+		stream_next_string = announce_path;
 	}
 	size_t entry_size = stream_next_string.size() + 1;
 	if (entry_size > download_->buffer_.size()) {

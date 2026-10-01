@@ -211,6 +211,9 @@ private:
 		io::AsyncWriterPtr stream_next_writer_;
 
 		string current_payload_name_;
+		// Windows: actual \\.\pipe\ path of the current payload stream,
+		// announced through stream-next (pipe names are unpredictable).
+		string current_stream_pipe_path_;
 		int64_t current_payload_size_;
 		io::AsyncReaderPtr current_payload_reader_;
 		shared_ptr<io::Canceller> current_stream_opener_;

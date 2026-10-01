@@ -277,8 +277,22 @@ expected::ExpectedStringVector DiscoverUpdateModules(const conf::MenderConfig &c
 
 error::Error UpdateModule::PrepareStreamNextPipe() {
 #ifdef _WIN32
-	// On Windows, use a named pipe instead of a POSIX FIFO.
+	// On Windows, use a named pipe instead of a POSIX FIFO. The pipe name is
+	// unpredictable (PID + counter), so write it into a regular file at the
+	// well-known POSIX location - update modules read the file to find the
+	// pipe (on POSIX they open the FIFO at this path directly).
 	download_->stream_next_path_ = GenerateWindowsPipePath("stream-next");
+	{
+		auto ex_os = io::OpenOfstream(path::Join(update_module_workdir_, "stream-next"));
+		if (!ex_os) {
+			return ex_os.error();
+		}
+		auto err =
+			io::WriteStringIntoOfstream(ex_os.value(), download_->stream_next_path_ + "\n");
+		if (err != error::NoError) {
+			return err;
+		}
+	}
 	return error::NoError;
 #else
 	download_->stream_next_path_ = path::Join(update_module_workdir_, "stream-next");
@@ -306,6 +320,8 @@ error::Error UpdateModule::PrepareAndOpenStreamPipe(
 	fs::path fs_path(path);
 	string pipe_name = fs_path.filename().string();
 	string pipe_path = GenerateWindowsPipePath(pipe_name);
+	// remember the generated name: it is announced through stream-next
+	download_->current_stream_pipe_path_ = pipe_path;
 
 	auto opener = make_shared<AsyncFifoOpener>(download_->event_loop_);
 	download_->current_stream_opener_ = opener;
