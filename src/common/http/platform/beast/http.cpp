@@ -26,6 +26,18 @@
 
 #include <mender-version.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+// wincrypt.h defines macros that collide with OpenSSL declarations.
+#undef X509_NAME
+#undef X509_EXTENSIONS
+#undef X509_CERT_PAIR
+#undef OCSP_REQUEST
+#undef OCSP_RESPONSE
+#undef PKCS7_ISSUER_AND_SERIAL
+#endif
+
 namespace mender {
 namespace common {
 namespace http {
@@ -302,6 +314,38 @@ Client::~Client() {
 	DoCancel();
 }
 
+#ifdef _WIN32
+// OpenSSL's set_default_verify_paths() points at the (usually nonexistent)
+// OpenSSL install prefix on Windows, so out of the box the client trusts no
+// CA and every TLS connection fails unless ServerCertificate is configured.
+// Import the Windows system ROOT store into the SSL context instead - the
+// same trust anchors every other TLS client on the machine uses.
+static void LoadWindowsSystemRootCerts(ssl::context &ctx) {
+	HCERTSTORE store = CertOpenSystemStoreA(0, "ROOT");
+	if (store == nullptr) {
+		log::Warning("Could not open the Windows ROOT certificate store");
+		return;
+	}
+	X509_STORE *x509_store = SSL_CTX_get_cert_store(ctx.native_handle());
+	PCCERT_CONTEXT win_cert = nullptr;
+	int added = 0;
+	while ((win_cert = CertEnumCertificatesInStore(store, win_cert)) != nullptr) {
+		const unsigned char *der = win_cert->pbCertEncoded;
+		X509 *x509 = d2i_X509(nullptr, &der, win_cert->cbCertEncoded);
+		if (x509 != nullptr) {
+			// Duplicates are rejected with return 0; not an error here.
+			if (X509_STORE_add_cert(x509_store, x509) == 1) {
+				added++;
+			}
+			X509_free(x509);
+		}
+	}
+	CertCloseStore(store, 0);
+	log::Debug(
+		"Loaded " + std::to_string(added) + " CA certificate(s) from the Windows ROOT store");
+}
+#endif
+
 error::Error Client::Initialize() {
 	if (initialized_) {
 		return error::NoError;
@@ -356,6 +400,13 @@ error::Error Client::Initialize() {
 				cert_loaded = false;
 			}
 		}
+#ifdef _WIN32
+		// The default paths rarely exist on Windows (see above); the system
+		// certificate store is the real trust source. SSL_CERT_FILE and
+		// ServerCertificate keep working as additional sources.
+		LoadWindowsSystemRootCerts(ssl_ctx_[i]);
+#endif
+
 		if (client_config_.server_cert_path != "") {
 			ssl_ctx_[i].load_verify_file(client_config_.server_cert_path, ec);
 			if (ec) {
