@@ -1,18 +1,21 @@
 @echo off
 REM Mender Inventory Script - Hardware Information
+REM
+REM Everything is gathered in ONE PowerShell invocation: each cold PowerShell
+REM start costs 1-2+ seconds (more on small CPUs or under load), and the
+REM client runs inventory scripts with a hard 10 second timeout - the previous
+REM five sequential invocations regularly exceeded it, dropping the whole
+REM hardware inventory.
 
-REM Get architecture from environment
 echo device_arch=%PROCESSOR_ARCHITECTURE%
 
-REM Get CPU info using PowerShell
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"`) do echo cpu_model=%%a
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Select-Object -First 1).NumberOfCores"`) do echo cpu_cores=%%a
-
-REM Get system info
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).Manufacturer"`) do echo manufacturer=%%a
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).Model"`) do echo model=%%a
-
-REM Get total memory in GB
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)"`) do echo memory_total_gb=%%a
+powershell -NoProfile -Command ^
+  "$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1;" ^
+  "$cs = Get-CimInstance Win32_ComputerSystem;" ^
+  "Write-Output ('cpu_model=' + $cpu.Name);" ^
+  "Write-Output ('cpu_cores=' + $cpu.NumberOfCores);" ^
+  "Write-Output ('manufacturer=' + $cs.Manufacturer);" ^
+  "Write-Output ('model=' + $cs.Model);" ^
+  "Write-Output ('memory_total_gb=' + [math]::Round($cs.TotalPhysicalMemory / 1GB, 2))"
 
 exit /b 0
