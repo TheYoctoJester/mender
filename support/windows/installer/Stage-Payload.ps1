@@ -73,11 +73,33 @@ if (Test-Path $vcpkgBin) {
     Write-Warning "vcpkg bin dir not found at $vcpkgBin - the installed client may fail to start without its DLLs."
 }
 
-# --- 3. MSVC runtime DLLs (best effort; target may otherwise need VC++ redist) -
-$sys32 = Join-Path $env:SystemRoot "System32"
-foreach ($rt in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "concrt140.dll")) {
-    $src = Join-Path $sys32 $rt
-    if (Test-Path $src) { Copy-Item $src $programDir -Force; Write-Host "Staged MSVC runtime: $rt" }
+# --- 3. MSVC runtime DLLs (app-local deployment) -------------------------------
+# A clean target has no VC++ redistributable; missing satellites such as
+# msvcp140_1/msvcp140_2/msvcp140_atomic_wait crash the client with
+# STATUS_DLL_NOT_FOUND (0xC0000135). Prefer the full redist CRT directory
+# from the build environment; fall back to globbing System32.
+$staged = 0
+if ($env:VCToolsRedistDir) {
+    $crtDir = Get-ChildItem (Join-Path $env:VCToolsRedistDir "x64") -Directory -Filter "Microsoft.VC*.CRT" |
+        Select-Object -First 1
+    if ($crtDir) {
+        foreach ($d in Get-ChildItem $crtDir.FullName -Filter *.dll) {
+            Copy-Item $d.FullName $programDir -Force; $staged++
+        }
+        Write-Host "Staged $staged MSVC runtime DLL(s) from $($crtDir.FullName)"
+    }
+}
+if ($staged -eq 0) {
+    $sys32 = Join-Path $env:SystemRoot "System32"
+    foreach ($rt in @("vcruntime140*.dll", "msvcp140*.dll", "concrt140.dll")) {
+        foreach ($f in Get-ChildItem $sys32 -Filter $rt -ErrorAction SilentlyContinue) {
+            Copy-Item $f.FullName $programDir -Force; $staged++
+            Write-Host "Staged MSVC runtime: $($f.Name)"
+        }
+    }
+}
+if ($staged -eq 0) {
+    Write-Warning "No MSVC runtime DLLs staged - the target machine will need the VC++ redistributable."
 }
 
 # --- 4. Support scripts -> data\ ---------------------------------------------
