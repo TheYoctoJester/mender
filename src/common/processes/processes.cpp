@@ -23,7 +23,17 @@ namespace processes {
 
 namespace log = mender::common::log;
 
+#ifdef _WIN32
+// Identity/inventory scripts on Windows are PowerShell-backed; a cold
+// PowerShell + CIM/WMI start (first boot after deploying an image to new
+// hardware, while PnP is still enumerating) routinely exceeds 10 seconds.
+// Observed on a SIMATIC IPC227E: every identity call timed out on the first
+// boot of a freshly deployed slot, failing an otherwise-good update into
+// rollback. 60 seconds gives the provider host time to warm up.
+const chrono::seconds DEFAULT_GENERATE_LINE_DATA_TIMEOUT {60};
+#else
 const chrono::seconds DEFAULT_GENERATE_LINE_DATA_TIMEOUT {10};
+#endif
 
 const ProcessesErrorCategoryClass ProcessesErrorCategory;
 
