@@ -21,6 +21,12 @@
 .PARAMETER ServiceName
     Name of the Windows service. Defaults to "MenderClient"
 
+.PARAMETER DatastoreDir
+    Optional directory for the Mender datastore (sets MENDER_DATASTORE_DIR in
+    the service environment). For A/B slot setups the datastore must live on
+    storage shared between the slots, otherwise deployment state does not
+    survive a slot switch and the update is never committed.
+
 .PARAMETER NoDownload
     If specified, the script will not attempt to download NSSM automatically.
 
@@ -38,6 +44,7 @@ param(
     [string]$MenderPath = "",
     [string]$NssmPath = "",
     [string]$ServiceName = "MenderClient",
+    [string]$DatastoreDir = "",
     [switch]$NoDownload
 )
 
@@ -253,6 +260,12 @@ try {
     & $nssm set $ServiceName AppStderrCreationDisposition 4
     & $nssm set $ServiceName AppRotateFiles 1
     & $nssm set $ServiceName AppRotateBytes 10485760
+
+    if ($DatastoreDir) {
+        New-Item -ItemType Directory -Path $DatastoreDir -Force | Out-Null
+        & $nssm set $ServiceName AppEnvironmentExtra "MENDER_DATASTORE_DIR=$DatastoreDir"
+        Write-Status "Datastore relocated to $DatastoreDir (MENDER_DATASTORE_DIR)"
+    }
 
     Write-Success "Service installed successfully"
 }
